@@ -187,8 +187,9 @@ static SigDef g_sigs[SIG_COUNT] = {
       "8B 15 ?? ?? ?? ?? 56 8B 35 ?? ?? ?? ?? 8B CE 69 C9 80 08 00 00 8B C2 03 CA 3B C1 74 ?? "
       "8D 49 00 80 78 02 00 74 ?? 81 A0 94 01 00 00 FF FF FF F8",
       0x832DB0, false, nullptr },
-    // MsGetChr (Fahrenheit's name; was "fx scene slot"): battle character i: 0..0x1E party/battle characters
-    // (*player_characters + i*0xF90), 0x1F..0x5C monsters (*monster_characters + (i-0x1F)*0x390)
+    // MsGetChr (Fahrenheit's name; was "fx scene slot"): id 0..0x1E = battle character record (*player_characters +
+    // i*0xF90; monsters are entries 20+ of it, Fahrenheit's monster_characters 0x01134468), 0x1F..0x5C = one of the two
+    // 0x390 sub-records per character slot (*chr_sub_records, FUN_00795b10). FUN_00793530 allocates both.
     { "MsGetChr FUN_00794020",
       "55 8B EC 8B 45 08 25 FF 00 00 00 83 F8 1F 7D 0E 69 C0 90 0F 00 00 03 05 ?? ?? ?? ?? 5D C3 "
       "83 F8 5D 7D 11 83 C0 E1 69 C0 90 03 00 00 03 05 ?? ?? ?? ??",
@@ -231,7 +232,7 @@ static Sym g_syms[] = {
     { "actor_table",      nullptr, 0x023C44E4, false },
     { "actor_count",      nullptr, 0x023C44E0, false },
     { "player_characters",  nullptr, 0x011334D4, false },  // pointer to the battle character array (0xF90 each)
-    { "monster_characters", nullptr, 0x0113446C, false },  // pointer to the monster array (0x390 each); Fahrenheit: 0x01134468
+    { "chr_sub_records",    nullptr, 0x0113446C, false },  // pointer to 62 x 0x390 sub-records, 2 per character slot (not monsters)
     { "frame_counter",    nullptr, 0x023CBBF0, false },
     { "vblank",           nullptr, 0x012FB7F0, false },
     { "vblank2",          nullptr, 0x012FB7F4, false },
@@ -243,7 +244,7 @@ static Sym g_syms[] = {
 static const int NSYMS = (int)(sizeof(g_syms) / sizeof(g_syms[0]));
 
 // Old names still accepted (regions.txt files and capture logs written before 28/10/2026)
-static const char* const LEGACY[][2] = { { "fx_scene_array", "player_characters" }, { "fx_scene_array2", "monster_characters" } };
+static const char* const LEGACY[][2] = { { "fx_scene_array", "player_characters" }, { "fx_scene_array2", "chr_sub_records" } };
 
 uint8_t* sym_rt(const char* name) {
     for (const auto& l : LEGACY) if (_stricmp(name, l[0]) == 0) name = l[1];
@@ -407,7 +408,7 @@ bool sigs_resolve_all() {
     }
     if (g_sigs[SIG_GETCHR].found) {
         set_sym("player_characters", SIG_GETCHR, 0x18);
-        set_sym("monster_characters", SIG_GETCHR, 0x2E);
+        set_sym("chr_sub_records", SIG_GETCHR, 0x2E);
     }
     if (g_sigs[SIG_FRAMECTR].found) set_sym("frame_counter", SIG_FRAMECTR, 0x01, SIG_FRAMECTR, 0x0D);
     if (g_sigs[SIG_VBLANK].found) {
