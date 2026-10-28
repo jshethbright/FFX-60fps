@@ -140,7 +140,7 @@ bool sig_match(const void* at, const char* pattern) {
 // ---------------------------------------------------------------- signature table
 enum {
     SIG_RUNNER, SIG_MAINLOOP, SIG_SET_EXEC, SIG_GET_EXEC, SIG_SET_DIVIDER, SIG_BACKLOG,
-    SIG_ACTORS, SIG_FXSCENE, SIG_FRAMECTR, SIG_VBLANK, SIG_CAMTWEEN, SIG_CAMBLOCK, SIG_MINIMAP, SIG_FXCTX,
+    SIG_ACTORS, SIG_GETCHR, SIG_FRAMECTR, SIG_VBLANK, SIG_CAMTWEEN, SIG_CAMBLOCK, SIG_MINIMAP, SIG_FXCTX,
     SIG_COUNT
 };
 
@@ -171,8 +171,9 @@ static SigDef g_sigs[SIG_COUNT] = {
     { "Sg_GetCurExecFrames",
       "80 3D ?? ?? ?? ?? 00 56 0F BE 35 ?? ?? ?? ?? 75 07 0F BE 35 ?? ?? ?? ?? E8 ?? ?? ?? ?? 0B C6 5E C3",
       0x82D7E0, true, nullptr },
-    // Stores the frame divider (1 or 2)
-    { "SKS_SetFrameDivider",
+    // Phyre_PFramework_PWindowWin32Base_SetFlipVSyncInterval (Fahrenheit's name; was SKS_SetFrameDivider): stores the
+    // flip interval 1 or 2 in DAT_00c30e88, whose only reader is the SKS_WinMainLoop limiter (period = value / 59.94 Hz)
+    { "SetFlipVSyncInterval",
       "55 8B EC 8B 45 08 83 F8 02 73 11 83 F8 01 73 11 C7 05 ?? ?? ?? ?? 01 00 00 00 5D C3 "
       "B8 02 00 00 00 A3 ?? ?? ?? ?? 5D C3",
       0x625090, false, nullptr },   // only alternate mode needs it
@@ -186,8 +187,9 @@ static SigDef g_sigs[SIG_COUNT] = {
       "8B 15 ?? ?? ?? ?? 56 8B 35 ?? ?? ?? ?? 8B CE 69 C9 80 08 00 00 8B C2 03 CA 3B C1 74 ?? "
       "8D 49 00 80 78 02 00 74 ?? 81 A0 94 01 00 00 FF FF FF F8",
       0x832DB0, false, nullptr },
-    // Returns an fx scene slot from the two scene arrays
-    { "fx scene slot FUN_00794020",
+    // MsGetChr (Fahrenheit's name; was "fx scene slot"): battle character i: 0..0x1E party/battle characters
+    // (*player_characters + i*0xF90), 0x1F..0x5C monsters (*monster_characters + (i-0x1F)*0x390)
+    { "MsGetChr FUN_00794020",
       "55 8B EC 8B 45 08 25 FF 00 00 00 83 F8 1F 7D 0E 69 C0 90 0F 00 00 03 05 ?? ?? ?? ?? 5D C3 "
       "83 F8 5D 7D 11 83 C0 E1 69 C0 90 03 00 00 03 05 ?? ?? ?? ??",
       0x794020, false, nullptr },
@@ -228,8 +230,8 @@ static Sym g_syms[] = {
     { "skip_render_d4",   nullptr, 0x012FB7D4, false },
     { "actor_table",      nullptr, 0x023C44E4, false },
     { "actor_count",      nullptr, 0x023C44E0, false },
-    { "fx_scene_array",   nullptr, 0x011334D4, false },
-    { "fx_scene_array2",  nullptr, 0x0113446C, false },
+    { "player_characters",  nullptr, 0x011334D4, false },  // pointer to the battle character array (0xF90 each)
+    { "monster_characters", nullptr, 0x0113446C, false },  // pointer to the monster array (0x390 each); Fahrenheit: 0x01134468
     { "frame_counter",    nullptr, 0x023CBBF0, false },
     { "vblank",           nullptr, 0x012FB7F0, false },
     { "vblank2",          nullptr, 0x012FB7F4, false },
@@ -240,7 +242,11 @@ static Sym g_syms[] = {
 };
 static const int NSYMS = (int)(sizeof(g_syms) / sizeof(g_syms[0]));
 
+// Old names still accepted (regions.txt files and capture logs written before 28/10/2026)
+static const char* const LEGACY[][2] = { { "fx_scene_array", "player_characters" }, { "fx_scene_array2", "monster_characters" } };
+
 uint8_t* sym_rt(const char* name) {
+    for (const auto& l : LEGACY) if (_stricmp(name, l[0]) == 0) name = l[1];
     for (int i = 0; i < NSYMS; i++) {
         if (_stricmp(g_syms[i].name, name) == 0) return g_syms[i].rt;
     }
@@ -399,9 +405,9 @@ bool sigs_resolve_all() {
         set_sym("actor_table", SIG_ACTORS, 0x02);
         set_sym("actor_count", SIG_ACTORS, 0x09);
     }
-    if (g_sigs[SIG_FXSCENE].found) {
-        set_sym("fx_scene_array", SIG_FXSCENE, 0x18);
-        set_sym("fx_scene_array2", SIG_FXSCENE, 0x2E);
+    if (g_sigs[SIG_GETCHR].found) {
+        set_sym("player_characters", SIG_GETCHR, 0x18);
+        set_sym("monster_characters", SIG_GETCHR, 0x2E);
     }
     if (g_sigs[SIG_FRAMECTR].found) set_sym("frame_counter", SIG_FRAMECTR, 0x01, SIG_FRAMECTR, 0x0D);
     if (g_sigs[SIG_VBLANK].found) {
@@ -425,7 +431,7 @@ bool sigs_resolve_all() {
     g_frame_counter = (volatile uint32_t*)sym_rt("frame_counter");
     g_vblank        = (volatile uint32_t*)sym_rt("vblank");
     if (!g_divider) g_set_divider_orig = nullptr;
-    log_line("signature scan OK (Sg_SetExecFrames/SKS_SetFrameDivider/Sg_GetCurExecFrames: cdecl, plain RET, "
+    log_line("signature scan OK (Sg_SetExecFrames/SetFlipVSyncInterval/Sg_GetCurExecFrames: cdecl, plain RET, "
              "verified statically - see re/W2-TOOL-STATUS.md)");
     return true;
 }

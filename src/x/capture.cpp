@@ -1116,7 +1116,7 @@ static void handle_async_events() {
     if (dr) {
         g.n_div_events += dr;
         g.flags[2] = 'D';
-        outf("  event: game asked SKS_SetFrameDivider(%ld) x%ld before inv %d - last one %s by fps60 pacing",
+        outf("  event: game asked SetFlipVSyncInterval(%ld) x%ld before inv %d - last one %s by fps60 pacing",
              g_div_req_last, dr, g.inv + 1, g_div_req_swallowed ? "swallowed" : "passed");
     }
 }

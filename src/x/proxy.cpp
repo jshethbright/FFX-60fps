@@ -264,7 +264,7 @@ static DWORD WINAPI init_thread(LPVOID) {
         return 0;
     }
     if (g_cfg.pacing && !g_set_divider_orig) {
-        log_line("fps60: SKS_SetFrameDivider not resolved - 60 Hz pacing impossible, NOTHING INSTALLED (fail-safe).");
+        log_line("fps60: SetFlipVSyncInterval (frame divider) not resolved - 60 Hz pacing impossible, NOTHING INSTALLED (fail-safe).");
         return 0;
     }
 

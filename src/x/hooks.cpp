@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Hooks: the frame driver (the runner's CALL Sg_MainLoop re-pointed to a wrapper that runs pre/post around
-// every invocation), the SKS_SetFrameDivider entry hook, and the CALL-retarget helper used by rows.
+// every invocation), the SetFlipVSyncInterval (frame divider) entry hook, and the CALL-retarget helper used by rows.
 // Details: docs/fps60/hooks.md
 #include "fps60.h"
 #include <string.h>
@@ -177,7 +177,7 @@ void hooks_install_divider_on_game_thread() {
     attempted = true;
 
     if (!g_set_divider_orig || !g_divider) {
-        log_line("hook divider: SKS_SetFrameDivider not resolved - pacing stays stock");
+        log_line("hook divider: SetFlipVSyncInterval not resolved - pacing stays stock");
         return;
     }
     uint8_t* entry = (uint8_t*)g_set_divider_orig;
@@ -187,6 +187,6 @@ void hooks_install_divider_on_game_thread() {
     }
     g_set_divider_orig = g_divider_tramp;        // our own calls bypass the hook
     g_divider_hooked = true;
-    log_line("hook divider: ON - SKS_SetFrameDivider gva=0x%08X entry hooked (tramp %p), divider now %u",
+    log_line("hook divider: ON - SetFlipVSyncInterval gva=0x%08X entry hooked (tramp %p), divider now %u",
              rt_to_gva_exe(entry), (void*)g_divider_tramp, *g_divider);
 }
