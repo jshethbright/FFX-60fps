@@ -103,6 +103,10 @@ void perf_walk(LONGLONG) {}
 volatile LONG g_disabled = 0;
 bool g_divider_hooked = true;
 
+// --- rows/X2-MAG-006.cpp (X2-FX-010, X2-DIAG-PPPRATE) ---
+uint8_t* mag006_entry() { return nullptr; }
+void mag006_set_rate_note(rate_note_fn) {}
+
 // --- x2_config.cpp ---
 Config g_cfg = { 1, 1, 0, 60, 1 };
 

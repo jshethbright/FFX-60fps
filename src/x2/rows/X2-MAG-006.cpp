@@ -255,11 +255,16 @@ static int run_step(void* prog, uint32_t flags, bool will_pause, program_step_fn
 // Ppp_ProgramStep, on every invocation, with the pause flag as others left it. They get the same LOOPDEFER treatment.
 static uint8_t*   g_field_step = nullptr;
 static program_step_fn g_field_step_orig = nullptr;
+static rate_note_fn g_rate_note = nullptr;
+void mag006_set_rate_note(rate_note_fn fn) { g_rate_note = fn; }
 static int __cdecl hook_field_step(void* prog, uint32_t flags) {
     if (!row_MAG006.on || g_disabled) return g_field_step_orig(prog, flags);
+    void* ret = _ReturnAddress();
     void* outer = g_step_prog; int outer_cls = g_step_caller;
     g_step_prog = prog; g_step_caller = 3;
+    int32_t clock_before = *(int32_t*)((uint8_t*)prog + 8);
     int r = run_step(prog, flags, *g_pause_flag != 0, g_field_step_orig);
+    if (g_rate_note) g_rate_note(prog, 3, ret, clock_before, *(int32_t*)((uint8_t*)prog + 8));
     g_step_prog = outer; g_step_caller = outer_cls;
     return r;
 }
@@ -338,8 +343,10 @@ static int __cdecl hook_program_step(void* prog, uint32_t flags) {
     g_step_prog = prog; g_step_caller = in_image(ret) ? 2 : 1;
     int before = 0;
     if (g_step_note) { before = count_parts(prog); g_step_note(prog, g_step_caller, before, -1, 0); }   // -1: step starts
+    int32_t clock_before = *(int32_t*)((uint8_t*)prog + 8);
     int r = program_step_body(prog, flags, ret);
     if (g_step_note) g_step_note(prog, g_step_caller, before, count_parts(prog), r);
+    if (g_rate_note) g_rate_note(prog, g_step_caller, ret, clock_before, *(int32_t*)((uint8_t*)prog + 8));
     g_step_prog = outer; g_step_caller = outer_cls;
     return r;
 }
