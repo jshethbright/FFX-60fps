@@ -9,7 +9,7 @@
 namespace x2 {
 
 // ---------------------------------------------------------------- registry
-extern Row row_MAG008, row_MAG009, row_LOOP005, row_LOOP004, row_UI001, row_UI017, row_W2A002, row_CLK002, row_MAG006, row_FX010DRAWOPS, row_FX010, row_DIAGPPPRATE, row_FX012, row_UI014, row_TEXANIM001, row_DIAGRATE, row_MENU001, row_MENU002, row_TITLE001, row_DIAGDRAWSTEP, row_SMOOTH001, row_SMOOTH002, row_SMOOTH003, row_MAG016, row_MAG030, row_MAG020, row_MAG026, row_MENU003, row_MAG025, row_MAG019, row_MAG027, row_MAGSTOCK, row_MAG031, row_MAG032, row_MAG033, row_MAG035, row_CHR001, row_CHR002, row_TASK001, row_HD001, row_SR003, row_DIAGPRESENT, row_VSYNC, row_DIAGPPPOPS, row_DIAGFTBLINK, row_DIAGOP114, row_DIAGFLASH, row_DIAGPSET, row_DIAGHIT, row_DIAGCRASH, row_CFGMENU, row_DEVTURBO, row_PACETURBO, row_LOAD001, row_DEVBISECT, row_DEVIMMORTAL, row_DEVTOPMOST, row_DIAGBLINK, row_DIAGAUTOBLINK, row_DEVEFFTEST, row_DIAGLUMA, row_DIAGCAPTURE, row_DIAGPPPSLOT, row_SAVE001, row_SAVE002;
+extern Row row_MAG008, row_MAG009, row_LOOP005, row_LOOP004, row_UI001, row_UI017, row_W2A002, row_CLK002, row_MAG006, row_FX010DRAWOPS, row_FX010, row_DIAGPPPRATE, row_FX012, row_UI014, row_TEXANIM001, row_DIAGRATE, row_MENU001, row_MENU002, row_TITLE001, row_DIAGDRAWSTEP, row_SMOOTH001, row_SMOOTH002, row_SMOOTH003, row_MAG016, row_MAG030, row_MAG020, row_MAG026, row_MENU003, row_MAG036, row_MAG025, row_MAG019, row_MAG027, row_MAGSTOCK, row_MAG031, row_MAG032, row_MAG033, row_MAG035, row_CHR001, row_CHR002, row_TASK001, row_HD001, row_SR003, row_DIAGPRESENT, row_VSYNC, row_DIAGPPPOPS, row_DIAGFTBLINK, row_DIAGOP114, row_DIAGFLASH, row_DIAGPSET, row_DIAGHIT, row_DIAGCRASH, row_CFGMENU, row_DEVTURBO, row_PACETURBO, row_LOAD001, row_DEVBISECT, row_DEVIMMORTAL, row_DEVTOPMOST, row_DIAGBLINK, row_DIAGAUTOBLINK, row_DEVEFFTEST, row_DIAGLUMA, row_DIAGCAPTURE, row_DIAGPPPSLOT, row_SAVE001, row_SAVE002;
 
 static Row* g_rows[] = {
     &row_MAG008,                                 // rows/X2-MAG-008.cpp
@@ -32,6 +32,7 @@ static Row* g_rows[] = {
     &row_MAG020,                                 // rows/X2-MAG-020.cpp (family-X node walk)
     &row_MAG026,                                 // rows/X2-MAG-026.cpp (family-X records; after MAG-006, MAG-020)
     &row_MENU003,                                // rows/X2-MENU-003.cpp (menu particles; after MAG-006)
+    &row_MAG036,                                 // rows/X2-MAG-036.cpp (effect object particles; after MAG-006)
     &row_MAG025,                                 // rows/X2-MAG-025.cpp (OPU effect-unit walker)
     &row_MAG019,                                 // rows/X2-MAG-019.cpp (VFX shader lookup guard)
     &row_MAG027,                                 // rows/X2-MAG-027.cpp (cross-fade timeline boundary events)
