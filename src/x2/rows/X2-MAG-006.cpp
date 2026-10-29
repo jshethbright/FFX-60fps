@@ -253,6 +253,7 @@ static int run_step(void* prog, uint32_t flags, bool will_pause, program_step_fn
 
 // Field particle programs (the pyrefly river, map effects) are stepped by the field loop through FUN_007fef20, not
 // Ppp_ProgramStep, on every invocation, with the pause flag as others left it. They get the same LOOPDEFER treatment.
+// X2-FX-010 decides whether a field step runs paused (render-only invocations); the pause is set and put back here.
 static uint8_t*   g_field_step = nullptr;
 static program_step_fn g_field_step_orig = nullptr;
 static rate_note_fn g_rate_note = nullptr;
@@ -263,7 +264,17 @@ static int __cdecl hook_field_step(void* prog, uint32_t flags) {
     void* outer = g_step_prog; int outer_cls = g_step_caller;
     g_step_prog = prog; g_step_caller = 3;
     int32_t clock_before = *(int32_t*)((uint8_t*)prog + 8);
-    int r = run_step(prog, flags, *g_pause_flag != 0, g_field_step_orig);
+    int r;
+    if (fx010_pause_field_step(prog)) {
+        int32_t saved = *g_pause_flag;
+        *g_pause_flag = 1;
+        fx010_pausing_field_step(true);
+        r = run_step(prog, flags, true, g_field_step_orig);
+        fx010_pausing_field_step(false);
+        *g_pause_flag = saved;
+    } else {
+        r = run_step(prog, flags, *g_pause_flag != 0, g_field_step_orig);
+    }
     if (g_rate_note) g_rate_note(prog, 3, ret, clock_before, *(int32_t*)((uint8_t*)prog + 8));
     g_step_prog = outer; g_step_caller = outer_cls;
     return r;

@@ -164,6 +164,8 @@ void     mag006_set_step_note(step_note_fn fn);   // diagnostics: called after e
 // X2-DIAG-PPPRATE: called after every particle step (spell, game and field) with the program clock (+8) around it
 typedef void (*rate_note_fn)(void* prog, int cls, const void* ret, int32_t clock_before, int32_t clock_after);
 void     mag006_set_rate_note(rate_note_fn fn);
+bool     fx010_pause_field_step(void* prog);      // X2-FX-010: run this field program step paused?
+void     fx010_pausing_field_step(bool on);       // X2-FX-010: brackets a step it paused (its spawn CALL skips)
 bool     pppops_prog_marked(void* prog);          // X2-MAG-006-UNPAUSE-OPS test (X2-DIAG-PPPOPS)
 void     mag026_draw_record(uint8_t* head, uint8_t* nd, void* cb);   // X2-MAG-020 draw-only walk -> X2-MAG-026
 bool     mag008_list_active();                 // X2-MAG-008: a PASS-LIST DLL (or its chain) is loaded

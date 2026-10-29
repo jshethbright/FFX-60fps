@@ -9,7 +9,7 @@
 namespace x2 {
 
 // ---------------------------------------------------------------- registry
-extern Row row_MAG008, row_MAG009, row_LOOP005, row_LOOP004, row_UI001, row_UI017, row_W2A002, row_CLK002, row_MAG006, row_FX010DRAWOPS, row_DIAGPPPRATE, row_FX012, row_UI014, row_TEXANIM001, row_DIAGRATE, row_MENU001, row_MENU002, row_TITLE001, row_DIAGDRAWSTEP, row_SMOOTH001, row_SMOOTH002, row_SMOOTH003, row_MAG016, row_MAG030, row_MAG020, row_MAG026, row_MAG025, row_MAG019, row_MAG027, row_MAGSTOCK, row_MAG031, row_MAG032, row_MAG033, row_MAG035, row_CHR001, row_CHR002, row_TASK001, row_HD001, row_SR003, row_DIAGPRESENT, row_VSYNC, row_DIAGPPPOPS, row_DIAGFTBLINK, row_DIAGOP114, row_DIAGFLASH, row_DIAGPSET, row_DIAGHIT, row_DIAGCRASH, row_CFGMENU, row_DEVTURBO, row_PACETURBO, row_LOAD001, row_DEVBISECT, row_DEVIMMORTAL, row_DEVTOPMOST, row_DIAGBLINK, row_DIAGAUTOBLINK, row_DEVEFFTEST, row_DIAGLUMA, row_DIAGCAPTURE, row_DIAGPPPSLOT, row_SAVE001, row_SAVE002;
+extern Row row_MAG008, row_MAG009, row_LOOP005, row_LOOP004, row_UI001, row_UI017, row_W2A002, row_CLK002, row_MAG006, row_FX010DRAWOPS, row_FX010, row_DIAGPPPRATE, row_FX012, row_UI014, row_TEXANIM001, row_DIAGRATE, row_MENU001, row_MENU002, row_TITLE001, row_DIAGDRAWSTEP, row_SMOOTH001, row_SMOOTH002, row_SMOOTH003, row_MAG016, row_MAG030, row_MAG020, row_MAG026, row_MAG025, row_MAG019, row_MAG027, row_MAGSTOCK, row_MAG031, row_MAG032, row_MAG033, row_MAG035, row_CHR001, row_CHR002, row_TASK001, row_HD001, row_SR003, row_DIAGPRESENT, row_VSYNC, row_DIAGPPPOPS, row_DIAGFTBLINK, row_DIAGOP114, row_DIAGFLASH, row_DIAGPSET, row_DIAGHIT, row_DIAGCRASH, row_CFGMENU, row_DEVTURBO, row_PACETURBO, row_LOAD001, row_DEVBISECT, row_DEVIMMORTAL, row_DEVTOPMOST, row_DIAGBLINK, row_DIAGAUTOBLINK, row_DEVEFFTEST, row_DIAGLUMA, row_DIAGCAPTURE, row_DIAGPPPSLOT, row_SAVE001, row_SAVE002;
 
 static Row* g_rows[] = {
     &row_MAG008,                                 // rows/X2-MAG-008.cpp
@@ -22,6 +22,7 @@ static Row* g_rows[] = {
     &row_CLK002,                                 // rows/X2-CLK-002.cpp
     &row_MAG006,                                 // rows/X2-MAG-006.cpp
     &row_FX010DRAWOPS,                           // rows/X2-FX-010-DRAWOPS.cpp
+    &row_FX010,                                  // rows/X2-FX-010.cpp (field particle programs; after MAG-006)
     &row_DIAGPPPRATE,                            // rows/X2-DIAG-PPPRATE.cpp (diagnostic, default 1 while in progress)
     &row_FX012,                                  // rows/X2-FX-012.cpp (pppop_flash on paused steps)
     &row_UI014,                                  // rows/X2-UI-014.cpp
