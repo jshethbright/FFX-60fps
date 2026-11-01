@@ -46,6 +46,7 @@ static Row* g_rows[] = {
     &row_UI020,
     &row_W2S001,
     &row_UISPH002,
+    &row_UISPH003,
     &row_UI014,
     &row_UIBTLL1,
     &row_TEXANIM001,
