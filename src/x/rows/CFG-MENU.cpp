@@ -209,6 +209,75 @@ static void set_fps(int v) {
     else if (f == rate_user_fps() || rate_set_fps(f)) pacing_set(true);   // refused: left as it was
     build_fps_values();
 }
+// ---------------------------------------------------------------- Fast Fury row (QOL-FURY)
+// Same spinner as Frame Rate over Off / 2 / 3 / 4 / 5 casts: lower / current / higher, the cursor always in the
+// middle, a blank outer slot past either end. Off shows the stock OFF text; numbers are digits (0x30 + d in every
+// language). The help is H_FURY_ON with its "3" swapped for the current number, found by walking whole glyph codes
+// (one byte, or a 0x2B..0x2F lead and its trail, after an optional 0x04 prefix) so a trail byte that looks like a
+// digit (jp) is not taken for it.
+static const int k_fury_steps[] = { 0, 2, 3, 4, 5 };
+enum { FURY_N = sizeof(k_fury_steps) / sizeof(k_fury_steps[0]), FURY_HELP_NUM = 3 };
+static int k_fury[3] = { -1, 0, 2 };                             // lower / current / higher; -1 = blank slot
+static uint8_t g_fury_val[3][8];
+static uint8_t g_fury_help[3][192];
+static int g_fury_lang = -1;
+
+static void fury_sub(const uint8_t* src, int want, int n, uint8_t* out, int cap) {
+    int len = 0;
+    while (src[len] && len < 1024) len++;
+    int a = -1, b = -1, i = 0;
+    while (i < len) {
+        int c = i;
+        if (src[c] == 0x04 && c + 1 < len) c++;                  // kr/ch: high-table prefix
+        int w = (src[c] >= 0x2B && src[c] <= 0x2F && c + 1 < len) ? 2 : 1;
+        bool dig = w == 1 && fps_digit(src[c]) && c == i;
+        if (dig && a < 0) a = i;
+        if (!dig && a >= 0) { b = i; break; }
+        i = c + w;
+    }
+    if (a >= 0 && b < 0) b = len;
+    int run = 0;
+    for (int k = a; a >= 0 && k < b; k++) run = run * 10 + (src[k] - 0x30);
+    uint8_t num[8];
+    int nn = fps_put(num, n);
+    if (a < 0 || run != want || a + nn + (len - b) >= cap) { fps_copy(src, out, cap); return; }
+    int k = 0;
+    for (int j = 0; j < a; j++) out[k++] = src[j];
+    for (int j = 0; j < nn; j++) out[k++] = num[j];
+    for (int j = b; j < len; j++) out[k++] = src[j];
+    out[k] = 0;
+}
+
+static void build_fury_text() {
+    g_fury_lang = ffx_text_lang();
+    int f = k_fury[1];
+    for (int v = 0; v < 3; v++) {
+        int k = k_fury[v] > 0 ? fps_put(g_fury_val[v], k_fury[v]) : 0;
+        g_fury_val[v][k] = 0;
+        if (f > 0) fury_sub(ffx_text(T_H_FURY_ON), FURY_HELP_NUM, f, g_fury_help[v], sizeof(g_fury_help[v]));
+        else fps_copy(ffx_text(T_H_FURY_OFF), g_fury_help[v], sizeof(g_fury_help[v]));
+    }
+}
+
+static void build_fury_values() {
+    int now = qol_fury_casts(), at = 0;
+    for (int i = 0; i < FURY_N; i++) if (k_fury_steps[i] == now) at = i;
+    k_fury[0] = at > 0 ? k_fury_steps[at - 1] : -1;
+    k_fury[1] = k_fury_steps[at];
+    k_fury[2] = at < FURY_N - 1 ? k_fury_steps[at + 1] : -1;
+    build_fury_text();
+}
+
+static int  get_fury() {
+    if (k_fury[1] != qol_fury_casts()) build_fury_values();
+    return 1;
+}
+static void set_fury(int v) {
+    if (v < 0 || v >= 3 || v == 1 || k_fury[v] < 0) return;     // the middle, or the blank slot past an end
+    qol_fury_set(k_fury[v]);
+    build_fury_values();
+}
+
 static int  get_smooth()  { return smooth_enabled() ? 0 : 1; }
 static void set_smooth(int v) { smooth_set(v == 0); }
 static int  row_get(Row& r) { return r.on ? 0 : 1; }
@@ -251,13 +320,16 @@ static const Opt k_opts[] = {
     { T_L_AP,     { -1, -1 }, { T_H_AP_ON, T_H_AP_OFF }, 2, get_ap, set_ap },
     { T_L_NFAP,   { T_V_FULL, T_V_HALF }, { T_H_NFAP_FULL, T_H_NFAP_HALF }, 2, get_rate, set_rate, ap_on },
     { T_L_RETRY,  { -1, -1 }, { T_H_RETRY_ON, T_H_RETRY_OFF }, 2, get_retry, set_retry },
+    // OPT_FURY: a spinner like OPT_FPS; lookup() answers it from the g_fury_* buffers
+    { T_L_FURY,   { -1, -1, -1 }, { T_H_FURY_ON, T_H_FURY_ON, T_H_FURY_ON }, 3, get_fury, set_fury },   // QOL-FURY
     { T_L_RESET,  { -1, -1 }, { T_H_RESET_ON, T_H_RESET_OFF }, 2, get_reset, set_reset },
     { T_L_TURBO,  { -1, -1 }, { T_H_TURBO_ON, T_H_TURBO_OFF }, 2, get_turbo, set_turbo },
     { T_L_VOICE,  { -1, -1 }, { T_H_VOICE_ON, T_H_VOICE_OFF }, 2, get_voice, set_voice },     // CLK-013 (opt-in)
     { T_L_SAVEICON, { -1, -1 }, { T_H_SAVEICON_ON, T_H_SAVEICON_OFF }, 2, get_saveicon, set_saveicon },   // QOL-SAVEICON
     { T_L_VSYNC,  { -1, -1 }, { T_H_VSYNC_ON, T_H_VSYNC_OFF }, 2, get_vsync, set_vsync },     // VSYNC (option)
 };
-enum { N_OPTS = sizeof(k_opts) / sizeof(k_opts[0]), OPT_FPS = 0 };
+enum { N_OPTS = sizeof(k_opts) / sizeof(k_opts[0]), OPT_FPS = 0, OPT_FURY = 6 };
+static_assert(OPT_FURY < N_OPTS, "OPT_FURY indexes k_opts");
 
 static CfgRow g_rows[N_OPTS];
 static void*  g_arr[MAX_STOCK + N_OPTS];
@@ -285,6 +357,7 @@ static void __cdecl row_apply(CfgRow* r) {
         k_opts[i].set(r->cur);
         int now = k_opts[i].get();
         if (i == OPT_FPS) log_line("CFG-MENU: Frame Rate %d fps", k_fps[FPS_MID]);   // the spinner re-centres: now != cur
+        else if (i == OPT_FURY) log_line("CFG-MENU: Fast Fury %d casts (0 = off)", qol_fury_casts());
         else if (now != r->cur) log_line("CFG-MENU: option %d could not change (shows value %d)", i, now);
         g_dirty = true;
         for (int k = 0; k < N_OPTS; k++) refresh(&g_rows[k]);   // a row may depend on this one (Non-Fighter AP)
@@ -354,7 +427,7 @@ static void __cdecl h_rowdraw(int a, int b, int idx) {
     if (!g_disabled && g_val_op[0]) {
         __try {
             void** arr = (void**)*g_array;
-            if (arr && idx >= 0 && idx < *g_count) spin = arr[idx] == (void*)&g_rows[OPT_FPS];
+            if (arr && idx >= 0 && idx < *g_count) spin = arr[idx] == (void*)&g_rows[OPT_FPS] || arr[idx] == (void*)&g_rows[OPT_FURY];
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
     g_val_base = spin ? k_spin_base : k_base;
@@ -365,12 +438,17 @@ static void __cdecl h_rowdraw(int a, int b, int idx) {
 static uint8_t* lookup(uint32_t id, bool help) {
     id &= 0xFFFF;
     if (g_fps_lang != ffx_text_lang()) build_fps_text();         // the player changed the game's text language
+    if (g_fury_lang != ffx_text_lang()) build_fury_text();
     if (id >= ID_LABEL && id < ID_LABEL + N_OPTS && !help)
         return id - ID_LABEL == OPT_FPS ? g_fps_label : (uint8_t*)ffx_text(k_opts[id - ID_LABEL].label);
     if (id >= ID_VALUE && id < ID_VALUE + N_OPTS * 4) {
         int i = (id - ID_VALUE) / 4, v = (id - ID_VALUE) % 4;
         if (v >= k_opts[i].nvals) v = 0;
         if (i == OPT_FPS) return help ? g_fps_help[v] : g_fps_val[v];
+        if (i == OPT_FURY) {
+            if (help) return g_fury_help[v];
+            return k_fury[v] == 0 ? g_label(ID_OFF) : g_fury_val[v];   // 0 = the stock OFF text; blank slot = ""
+        }
         if (help) return (uint8_t*)ffx_text(k_opts[i].help[v]);
         if (k_opts[i].vals[v] >= 0) return (uint8_t*)ffx_text(k_opts[i].vals[v]);
         return g_label(v == 0 ? ID_ON : ID_OFF);
@@ -404,6 +482,9 @@ static void write_ini() {
     config_write("rows", "QOL-AP", on01[get_ap()]);
     if (ap_on()) config_write("rows", "QOL-AP-RATE", get_rate() == 0 ? "100" : "50");
     config_write("rows", "QOL-RETRY", on01[get_retry()]);
+    char ff[8];
+    _snprintf_s(ff, sizeof(ff), _TRUNCATE, "%d", qol_fury_casts());
+    config_write("rows", "QOL-FURY", ff);
     config_write("rows", "DEV-TURBO", on01[get_turbo()]);
     config_write("rows", "CLK-013", on01[get_voice()]);
     config_write("rows", "QOL-SAVEICON", get_saveicon() ? "1" : "0");
@@ -557,6 +638,7 @@ static bool install() {
     }
     ffx_text_init();
     build_fps_values();
+    build_fury_values();
     log_line("  CFG-MENU: Frame Rate spinner, 30 (stock) / 60..240 in 30 steps, now %d", k_fps[FPS_MID]);
     log_line("  CFG-MENU: enter gva=0x%08X label gva=0x%08X help gva=0x%08X; cursor 0x%08X count 0x%08X array 0x%08X; %d rows",
              rt_to_gva_exe(g_enter_fn), rt_to_gva_exe(g_label_fn), rt_to_gva_exe(g_help_fn), rt_to_gva_exe((void*)g_cursor),
@@ -617,6 +699,6 @@ static void stop() {
 
 Row row_CFGMENU = {
     "CFG-MENU",
-    "mod options (Frame Rate, Smooth, Sensor, AP, Non-Fighter AP, Retry, Soft Reset, Turbo, Voice Sync, Autosave Chocobo) as rows of the game's Config page",
+    "mod options (Frame Rate, Smooth, Sensor, AP, Non-Fighter AP, Retry, Fast Fury, Soft Reset, Turbo, Voice Sync, Autosave Chocobo) as rows of the game's Config page",
     1, install, pre, nullptr, 0, stop
 };

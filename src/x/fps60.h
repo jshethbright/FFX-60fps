@@ -203,6 +203,9 @@ extern Row row_QOLSENSOR;                       // rows/QOL-SENSOR.cpp (gameplay
 extern Row row_BOOST001;                        // rows/BOOST-001.cpp (game speed booster 2x/4x at 60 Hz)
 extern Row row_QOLAP;
 extern Row row_QOLRETRY;                        // rows/QOL-RETRY.cpp (gameplay: Retry / Title after a wipe)                           // rows/QOL-AP.cpp (gameplay: whole party earns AP)
+extern Row row_QOLFURY;                         // rows/QOL-FURY.cpp (gameplay: Fast Fury)
+int   qol_fury_casts();                          // QOL-FURY: casts when on, 0 = off
+bool  qol_fury_set(int n);                       // QOL-FURY: runtime change (CFG-MENU): 0 = off, else 2..16
 extern Row row_CFGMENU;                         // rows/CFG-MENU.cpp (mod options in the game's Config page)
 extern Row row_TEXANIM001;                      // rows/TEXANIM-001.cpp (chr texture animation per logic tick)
 extern Row row_DIAG_DYNGEO;                    // rows/DIAG-DYNGEO.cpp (dynamic-geometry upload diag)
