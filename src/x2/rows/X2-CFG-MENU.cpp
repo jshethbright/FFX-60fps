@@ -14,8 +14,9 @@
 //     x2_text_strings.h (generated with the game's own glyph tables, tools/gen_text_x2.py); every other id passes on.
 //     Each value has its own id, because the help text is looked up by the current value.
 // Options: 60 FPS, Smooth Motion, 60 FPS Menu, Soft Reset, Turbo, Idle Motion, V-Sync, Fast Results (battle results at
-// 30 fps; default on under Wine / Proton). Dev builds add Load Mode Pacing, Idle-Wait Hold, Battle Setup Hold, F8
-// Bisect Tool and the three Smooth rows, in English only.
+// 30 fps; default on under Wine / Proton), Idle-Wait Hold and Battle Setup Hold (X2-LOAD-001's two 30 fps holds,
+// default on under Wine / Proton; English text in every language). Dev builds add Load Mode Pacing, F8 Bisect Tool
+// and the three Smooth rows, in English only.
 // An option whose row was off at startup is shown and saved, and takes effect at the next start (rows are never
 // installed at runtime). Soft Reset writes the [x2] soft_reset key: off writes 0, on the default button chord.
 #include "../x2.h"
@@ -26,8 +27,9 @@
 namespace x2 {
 
 extern Row row_CFGMENU, row_MENU002, row_SR003, row_DEVTURBO, row_CHR002, row_SMOOTH001, row_SMOOTH002, row_SMOOTH003, row_VSYNC;
+extern Row row_LOAD001;
 #ifdef FPS60_DEV
-extern Row row_LOAD001, row_DEVBISECT;
+extern Row row_DEVBISECT;
 #endif
 
 #pragma pack(push, 1)
@@ -95,15 +97,15 @@ static void set_vsync(bool on) { row_set(row_VSYNC, on); }
 static bool live_vsync()  { return row_VSYNC.installed != 0; }
 static int  get_results() { return pacing_menudiv2_get(); }
 static void set_results(bool on) { pacing_menudiv2_set(on); }
-#ifdef FPS60_DEV
-// Dev build only (msbuild /p:Fps60Dev=1): developer options, English text in every language (U 19/10/2026).
-static int  get_load()    { return row_LOAD001.on != 0; }
-static void set_load(bool on) { row_set(row_LOAD001, on); }
-static bool live_load()   { return row_LOAD001.installed != 0; }
 static int  get_idlehold() { return load_idlehold_get(); }
 static void set_idlehold(bool on) { load_idlehold_set(on); }
 static int  get_bhold()   { return load_battlehold_get(); }
 static void set_bhold(bool on) { load_battlehold_set(on); }
+static bool live_load()   { return row_LOAD001.installed != 0; }   // the holds read their ini keys at install
+#ifdef FPS60_DEV
+// Dev build only (msbuild /p:Fps60Dev=1): developer options, English text in every language (U 19/10/2026).
+static int  get_load()    { return row_LOAD001.on != 0; }
+static void set_load(bool on) { row_set(row_LOAD001, on); }
 static int  get_bisect()  { return row_DEVBISECT.on != 0; }
 static void set_bisect(bool on) { row_set(row_DEVBISECT, on); }
 static bool live_bisect() { return row_DEVBISECT.installed != 0; }
@@ -127,10 +129,10 @@ static Option g_options[] = {
     { T_L_IDLE,   T_H_IDLE_ON,   T_H_IDLE_OFF,   get_idle,   set_idle,   "rows", "X2-CHR-002",   1, live_idle },
     { T_L_VSYNC,  T_H_VSYNC_ON,  T_H_VSYNC_OFF,  get_vsync,  set_vsync,  "rows", "X2-VSYNC",     0, live_vsync },
     { T_L_RESULTS, T_H_RESULTS_ON, T_H_RESULTS_OFF, get_results, set_results, "rows", "X2-PACE-MENUDIV2", 0, live_always },
+    { T_L_DEV_IDLE,   T_H_DEV_IDLE_ON,   T_H_DEV_IDLE_OFF,   get_idlehold, set_idlehold, "rows", "X2-LOAD-001-IDLEHOLD",   0, live_load },
+    { T_L_DEV_BATTLE, T_H_DEV_BATTLE_ON, T_H_DEV_BATTLE_OFF, get_bhold,    set_bhold,    "rows", "X2-LOAD-001-BATTLEHOLD", 0, live_load },
 #ifdef FPS60_DEV
     { T_L_DEV_LOAD,   T_H_DEV_LOAD_ON,   T_H_DEV_LOAD_OFF,   get_load,     set_load,     "rows", "X2-LOAD-001",            1, live_load },
-    { T_L_DEV_IDLE,   T_H_DEV_IDLE_ON,   T_H_DEV_IDLE_OFF,   get_idlehold, set_idlehold, "rows", "X2-LOAD-001-IDLEHOLD",   0, live_always },
-    { T_L_DEV_BATTLE, T_H_DEV_BATTLE_ON, T_H_DEV_BATTLE_OFF, get_bhold,    set_bhold,    "rows", "X2-LOAD-001-BATTLEHOLD", 0, live_always },
     { T_L_DEV_BISECT, T_H_DEV_BISECT_ON, T_H_DEV_BISECT_OFF, get_bisect,   set_bisect,   "rows", "X2-DEV-BISECT",          1, live_bisect },
     { T_L_DEV_SM1,    T_H_DEV_SM1_ON,    T_H_DEV_SM1_OFF,    get_sm1,      set_sm1,      "rows", "X2-SMOOTH-001",          1, live_sm1 },
     { T_L_DEV_SM2,    T_H_DEV_SM2_ON,    T_H_DEV_SM2_OFF,    get_sm2,      set_sm2,      "rows", "X2-SMOOTH-002",          1, live_sm2 },
