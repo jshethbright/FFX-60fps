@@ -294,6 +294,8 @@ static int  get_reset()   { return row_get(row_SR003); }
 static void set_reset(int v) { row_set(row_SR003, v == 0); }
 static int  get_turbo()   { return row_get(row_DEVTURBO); }
 static void set_turbo(int v) { row_set(row_DEVTURBO, v == 0); }
+static int  get_btlmenu() { return row_get(row_QOLBTLMENU); }
+static void set_btlmenu(int v) { row_set(row_QOLBTLMENU, v == 0); }
 static int  get_voice()   { return row_get(row_CLK013); }
 static void set_voice(int v) { row_set(row_CLK013, v == 0); }
 static int  get_saveicon() { return row_QOLSAVEICON.on ? 1 : 0; }                         // ON = stock chocobo shown
@@ -322,6 +324,7 @@ static const Opt k_opts[] = {
     { T_L_RETRY,  { -1, -1 }, { T_H_RETRY_ON, T_H_RETRY_OFF }, 2, get_retry, set_retry },
     // OPT_FURY: a spinner like OPT_FPS; lookup() answers it from the g_fury_* buffers
     { T_L_FURY,   { -1, -1, -1 }, { T_H_FURY_ON, T_H_FURY_ON, T_H_FURY_ON }, 3, get_fury, set_fury },   // QOL-FURY
+    { T_L_BTLMENU, { -1, -1 }, { T_H_BTLMENU_ON, T_H_BTLMENU_OFF }, 2, get_btlmenu, set_btlmenu },     // QOL-BTLMENU
     { T_L_RESET,  { -1, -1 }, { T_H_RESET_ON, T_H_RESET_OFF }, 2, get_reset, set_reset },
     { T_L_TURBO,  { -1, -1 }, { T_H_TURBO_ON, T_H_TURBO_OFF }, 2, get_turbo, set_turbo },
     { T_L_VOICE,  { -1, -1 }, { T_H_VOICE_ON, T_H_VOICE_OFF }, 2, get_voice, set_voice },     // CLK-013 (opt-in)
@@ -485,6 +488,7 @@ static void write_ini() {
     char ff[8];
     _snprintf_s(ff, sizeof(ff), _TRUNCATE, "%d", qol_fury_casts());
     config_write("rows", "QOL-FURY", ff);
+    config_write("rows", "QOL-BTLMENU", on01[get_btlmenu()]);
     config_write("rows", "DEV-TURBO", on01[get_turbo()]);
     config_write("rows", "CLK-013", on01[get_voice()]);
     config_write("rows", "QOL-SAVEICON", get_saveicon() ? "1" : "0");
@@ -699,6 +703,6 @@ static void stop() {
 
 Row row_CFGMENU = {
     "CFG-MENU",
-    "mod options (Frame Rate, Smooth, Sensor, AP, Non-Fighter AP, Retry, Fast Fury, Soft Reset, Turbo, Voice Sync, Autosave Chocobo) as rows of the game's Config page",
+    "mod options (Frame Rate, Smooth, Sensor, AP, Non-Fighter AP, Retry, Fast Fury, Fast Battle Menu, Soft Reset, Turbo, Voice Sync, Autosave Chocobo) as rows of the game's Config page",
     1, install, pre, nullptr, 0, stop
 };

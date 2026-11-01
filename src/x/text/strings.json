@@ -44,6 +44,10 @@
     "H_FURY_ON": {"en": "Fury ends at once and casts 3 spells.", "fr": "Subjuguer se termine aussitôt et lance 3 sorts.", "sp": "Tentación termina al instante y lanza 3 hechizos.", "de": "Wut endet sofort und wirkt 3 Zauber.", "it": "Tentazione termina subito e lancia 3 magie.", "jp": "テンプテーションをすぐに終えて魔法を3回唱えます", "kr": "템테이션을 바로 끝내고 마법을 3회 사용합니다", "ch": "誘惑立即結束並施放3次魔法"},
     "H_FURY_OFF": {"en": "Original: spin the stick to cast spells.", "fr": "Original : faites tourner le stick pour lancer des sorts.", "sp": "Original: gira el stick para lanzar hechizos.", "de": "Original: Stick drehen, um Zauber zu wirken.", "it": "Originale: ruota la levetta per lanciare magie.", "jp": "元のまま(スティックを回して魔法を唱えます)", "kr": "원래대로(스틱을 돌려 마법을 사용합니다)", "ch": "原本(轉動操作桿施放魔法)"},
 
+    "L_BTLMENU": {"en": "Fast Battle Menu", "fr": "Menu combat rapide", "sp": "Menú combate rápido", "de": "Schnelles Kampfmenü", "it": "Menu battaglia rapido", "jp": "バトルメニュー高速", "kr": "전투 메뉴 고속", "ch": "快速戰鬥選單"},
+    "H_BTLMENU_ON": {"en": "Battle menus open and take input at once.", "fr": "Les menus de combat s'ouvrent et répondent aussitôt.", "sp": "Los menús de combate se abren y responden al instante.", "de": "Kampfmenüs öffnen sich und reagieren sofort.", "it": "I menu di battaglia si aprono e rispondono subito.", "jp": "バトルメニューがすぐに開き、すぐに操作できます", "kr": "전투 메뉴가 바로 열리고 바로 조작할 수 있습니다", "ch": "戰鬥選單立即開啟並可立即操作"},
+    "H_BTLMENU_OFF": {"en": "Original: a short wait before each battle menu takes input.", "fr": "Original : courte attente avant chaque menu de combat.", "sp": "Original: breve espera antes de cada menú de combate.", "de": "Original: kurze Wartezeit vor jedem Kampfmenü.", "it": "Originale: breve attesa prima di ogni menu di battaglia.", "jp": "元のまま(メニューの操作まで少し待ちます)", "kr": "원래대로(메뉴 조작까지 조금 기다립니다)", "ch": "原本(選單操作前稍有等待)"},
+
     "P_RETRY":    { "en": "Retry", "fr": "Réessayer", "sp": "Reintentar", "de": "Wiederholen", "it": "Riprova", "jp": "リトライ", "kr": "재도전", "ch": "重新挑戰" },
     "P_GIVEUP":   { "en": "Give up", "fr": "Abandonner", "sp": "Rendirse", "de": "Aufgeben", "it": "Rinuncia", "jp": "あきらめる", "kr": "포기", "ch": "放棄" }
   }
