@@ -210,6 +210,7 @@ extern Row row_SR003;                          // rows/SR-003.cpp (soft reset ch
 extern Row row_LAB001;                          // rows/LAB-001.cpp (combat lab diagnostic, default off)
 extern Row row_UISPH002;                        // rows/UI-SPH-002.cpp (Sphere Grid particles paused on render-only)
 extern Row row_UISPH003;                        // rows/UI-SPH-003.cpp (Sphere Grid hand bob steps on logic ticks only)
+extern Row row_UI022;                           // rows/UI-022.cpp (Fury stick queue polled once per logic tick)
 uint8_t* mag006_entry();                        // Ppp_ProgramStep entry (null if MAG-006 is off)
 bool     mag006_pause_exe_caller(uint8_t* ret); // MAG-006 pauses this EXE call site like a DLL caller
 extern Row row_FX010;                            // rows/FX-010.cpp
