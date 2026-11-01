@@ -171,6 +171,7 @@
     <ClCompile Include="src\x\rows\DIAG-HANGDUMP.cpp" />
     <ClCompile Include="src\x\rows\DIAG-PAUSEWATCH.cpp" />
     <ClCompile Include="src\x\rows\DIAG-BTLSIG.cpp" />
+    <ClCompile Include="src\x\rows\DIAG-FURY.cpp" />
     <ClCompile Include="src\x\rows\DIAG-DRAWSTEP.cpp" />
     <ClCompile Include="src\x\rows\DIAG-TEXTDUMP.cpp" />
     <ClCompile Include="src\x\diag.cpp" />
