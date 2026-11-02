@@ -1153,7 +1153,17 @@ static bool install() {
         uint8_t* m = sig_find_unique("FX-010-LOOPDEFER particle loop restart (FUN_00717010)",
             "8B 4B 18 56 89 4E 0C E8 ?? ?? ?? ?? 8B 5D F4 83 C4 04", 0x717236);
         uint8_t* t = m ? call_target(m + 7) : nullptr;
-        if (!m || !t || rt_to_gva_exe(t) != 0x712D20) {
+        // The CALL target is verified by the body of FUN_00712d20, wherever it sits (the pre-01/10/2026 FFX.exe has it
+        // at another VA; the old exact-VA test turned LOOPDEFER off there and looping field particles flashed,
+        // U 02/11/2026). S (re/decomp asm 0x712D20): PUSH EBP; MOV EBP,ESP; PUSH ECX; PUSH EBX; PUSH ESI;
+        // MOV ESI,[EBP+8]; PUSH EDI; PUSH [ESI+8]; CALL dec; PUSH [EAX]; CALL dec; MOV EBX,[EAX+0x20]; XOR ECX,ECX;
+        // ADD ESP,8; ADD EBX,ESI; XOR EDI,EDI; MOV [EBP-4],EAX; CMP CX,[EAX+0x26]; ... MOV EAX,[EAX+0x20] (op reset
+        // callback; the sibling FUN_00712d90 has the same bytes up to here but reads +0x1C). Both CALLs: same decoder.
+        bool body = t && sig_match(t, "55 8B EC 51 53 56 8B 75 08 57 FF 76 08 E8 ?? ?? ?? ?? FF 30 E8 ?? ?? ?? ?? "
+                                      "8B 58 20 33 C9 83 C4 08 03 DE 33 FF 89 45 FC 66 3B 48 26 7D 38 8D 70 28 "
+                                      "FF 36 E8 ?? ?? ?? ?? 8B 4E 08 83 C4 04 89 0B 8D 5B 04 85 C0 74 10 8B 40 20") &&
+                    call_target(t + 0xD) == call_target(t + 0x14);
+        if (!m || !body) {
             log_line("  FX-010-LOOPDEFER: restart CALL not found - sub-switch off");
             g_loopdefer = false;
         } else {
