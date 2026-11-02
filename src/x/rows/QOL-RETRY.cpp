@@ -300,7 +300,9 @@ static void pre() {
                 g_w_focus(WIN);
                 if (++g_refocus == 1) log_line("QOL-RETRY: prompt lost the input focus - taken back (logged once)");
             }
-            if (g_prompt_inv % 30 == 1 && g_prompt_inv < 1200) {
+            // The fixed VAs below hold only in BuildID 25501027: the resolved window table at its own VA proves it (the
+            // pre-01/10/2026 FFX.exe moves this data, and the line dereferences pointers read from it, 02/11/2026).
+            if (g_prompt_inv % 30 == 1 && g_prompt_inv < 1200 && rt_to_gva_exe(g_win_tbl) == 0x01865B3C) {
                 // diagnostic only (fixed Ghidra VAs, re/ledger/RETRY-UI.md): window input path
                 uint8_t* eb = exe_base();
                 auto at = [eb](uint32_t va) { return eb + (va - 0x400000); };
