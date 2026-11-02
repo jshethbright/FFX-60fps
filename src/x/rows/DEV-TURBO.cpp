@@ -71,6 +71,16 @@ static int __cdecl h_active() {
     return g_held ? 1 : g_active_tramp();
 }
 
+// The index/engaged/table block inside FUN_006f7340, found in its body (0x6F73CD = +0x8D in BuildID 25501027; the
+// pre-01/10/2026 FFX.exe has it at another offset, so the old fixed +0x8D refused that build, 02/11/2026). One hit
+// only (S: unique in the first 0x200 bytes of 0x6F7340, function size 0x121).
+static uint8_t* find_index_block(uint8_t* f) {
+    uint8_t* hit = nullptr;
+    for (int i = 0; i < 0x200; i++)
+        if (sig_match(f + i, "A1 ?? ?? ?? ?? 85 C0 74 ?? 83 3D ?? ?? ?? ?? 00 D9 04 85")) { if (hit) return nullptr; hit = f + i; }
+    return hit;
+}
+
 static bool install() {
     g_key = config_row("DEV-TURBO-KEY", 0x60);
     g_speed = config_row("DEV-TURBO-SPEED", 10);
@@ -81,11 +91,12 @@ static bool install() {
         "55 8B EC 80 3D ?? ?? ?? ?? 00 0F 84 ?? ?? ?? ?? 53 E8 ?? ?? ?? ?? 83 F8 01 0F 94 C7 E8", 0x6F7340);
     if (!g_scale_fn) return false;
     // The turbo index global, from 0x6F73CD MOV EAX,[index] (+0x8D) after FLD table[EAX*4] check shape.
-    if (!sig_match(g_scale_fn + 0x8D, "A1 ?? ?? ?? ?? 85 C0 74 ?? 83 3D ?? ?? ?? ?? 00 D9 04 85")) {
+    uint8_t* blk = find_index_block(g_scale_fn);
+    if (!blk) {
         log_line("  DEV-TURBO: FUN_006f7340 body has an unexpected shape - refused");
         return false;
     }
-    uint32_t idx = (uint32_t)(uintptr_t)read_abs(g_scale_fn + 0x8E);
+    uint32_t idx = (uint32_t)(uintptr_t)read_abs(blk + 1);
     // FUN_006f7330: XOR EAX,EAX; CMP [index],EAX; SETNZ AL; RET (same global)
     char pat[96];
     _snprintf_s(pat, sizeof(pat), _TRUNCATE, "33 C0 39 05 %02X %02X %02X %02X 0F 95 C0 C3",
@@ -95,7 +106,7 @@ static bool install() {
     if (config_row("DEV-TURBO-SOUND", 1)) {
         g_sound_fn = (void (__cdecl*)(int))sig_find_unique("DEV-TURBO booster sound switch FUN_00821c60",
             "55 8B EC A1 ?? ?? ?? ?? 56 85 C0 75 13 8B 75 08 85 F6 74 34 C7 05 ?? ?? ?? ?? 01 00 00 00 EB 12 83 F8 01 75 23", 0x821C60);
-        g_booster_on = (volatile int32_t*)read_abs(g_scale_fn + 0x98);   // CMP [DAT_00ce82b8],0 after the index test
+        g_booster_on = (volatile int32_t*)read_abs(blk + 0xB);   // CMP [DAT_00ce82b8],0 after the index test
     }
     if (config_row("DEV-TURBO-VOICE", 1)) {
         g_vbusy_fn = sig_find_unique("DEV-TURBO voice-busy query FUN_0067a710", "8B 0D ?? ?? ?? ?? 6A 11 E8 ?? ?? ?? ?? C3", 0x67A710);
