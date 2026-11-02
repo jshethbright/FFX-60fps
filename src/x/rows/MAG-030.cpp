@@ -200,15 +200,27 @@ static bool install() {
             "55 8B EC 51 53 56 57 66 8B 7D 08 66 83 FF 01 75 0A C7 05", 0x80BD50);
         if (!g_walk_entry) g_life_on = 0;
     }
-    // The handlers the ledger names (FX-004..006), checked so a shifted table is refused.
-    static const struct { int op; uint32_t gva; } known[] = { {1, 0x811120}, {9, 0x8124B0}, {10, 0x811530}, {17, 0x811BC0} };
+    // The handlers the ledger names (FX-004..006), checked by their body so a shifted table is refused but another
+    // FFX.exe build (handlers at other VAs: pre-01/10/2026 build, U 02/11/2026) is accepted. S: re/decomp asm at the
+    // BuildID 25501027 VAs below; absolute data operands are wildcards.
+    static const struct { int op; uint32_t gva; const char* body; } known[] = {
+        {1, 0x811120, "55 8B EC 83 EC 0C 53 8B 5D 08 56 57 8B BB 20 02 00 00 8B 87 C8 00 00 00 89 43 04 0F BF 87 F2 00 00 00"},
+        {9, 0x8124B0, "55 8B EC 83 EC 24 53 8B 5D 08 56 8B 83 20 02 00 00 57 8B B0 A8 00 00 00 50 8D 7E 20 53 89 75 DC "
+                      "89 7D FC C6 83 10 02 00 00 00 E8"},
+        {10, 0x811530, "55 8B EC 81 EC 88 00 00 00 56 57 8B 7D 08 8B B7 20 02 00 00 89 75 BC 0F B6 46 18 8A 80 ?? ?? ?? ?? "
+                       "84 86 B3 00 00 00 0F 85"},
+        {17, 0x811BC0, "55 8B EC 81 EC 90 00 00 00 A1 ?? ?? ?? ?? 33 C5 89 45 FC 8B 4D 0C 53 57 8B 7D 08 89 7D 98 "
+                       "8B 9F 20 02 00 00 89 4D 94 0F B6 43 18 89 5D C0 8A 80 ?? ?? ?? ??"},
+    };
     for (auto& k : known) {
-        void* want = exe_base() + (k.gva - 0x400000);
-        if (g_table[k.op] != want) {
-            log_line("  MAG-030: table gva=0x%08X slot %d = %p, not the op handler gva=0x%08X - refused",
+        if (!sig_match(g_table[k.op], k.body)) {
+            log_line("  MAG-030: table gva=0x%08X slot %d = %p, not the op handler (FUN_%08x body) - refused",
                      rt_to_gva_exe(g_table), k.op, g_table[k.op], k.gva);
             return false;
         }
+        if (rt_to_gva_exe(g_table[k.op]) != k.gva)
+            log_line("  MAG-030: op %d handler gva=0x%08X (0x%08X in BuildID 25501027), body verified",
+                     k.op, rt_to_gva_exe(g_table[k.op]), k.gva);
     }
     log_line("  MAG-030: OPP table gva=0x%08X, restore mask 0x%05X (MAG-030-OPS)", rt_to_gva_exe(g_table), g_restore_mask);
     return true;
