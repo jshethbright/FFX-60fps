@@ -40,19 +40,30 @@ static void pre() {
     }
 }
 
+// The index/engaged/table block inside FUN_006f7340, found in its body (0x6F73CD = +0x8D in BuildID 25501027; the
+// pre-01/10/2026 FFX.exe has it at another offset, so the old fixed +0x8D refused that build, 02/11/2026). One hit
+// only (S: unique in the first 0x200 bytes of 0x6F7340, function size 0x121).
+static uint8_t* find_index_block(uint8_t* f) {
+    uint8_t* hit = nullptr;
+    for (int i = 0; i < 0x200; i++)
+        if (sig_match(f + i, "A1 ?? ?? ?? ?? 85 C0 74 ?? 83 3D ?? ?? ?? ?? 00 D9 04 85")) { if (hit) return nullptr; hit = f + i; }
+    return hit;
+}
+
 static bool install() {
     // FUN_006f7340: PUSH EBP; MOV EBP,ESP; CMP byte [enabled],0; JZ far; PUSH EBX; CALL; CMP EAX,1; SETZ BH; CALL
     uint8_t* f = sig_find_unique("BOOST-001 booster delta scale FUN_006f7340",
         "55 8B EC 80 3D ?? ?? ?? ?? 00 0F 84 ?? ?? ?? ?? 53 E8 ?? ?? ?? ?? 83 F8 01 0F 94 C7 E8", 0x6F7340);
     if (!f) return false;
     // 0x6F73CD MOV EAX,[index]; TEST EAX,EAX; JZ; CMP dword [engaged],0; FLD float [EAX*4+table]
-    if (!sig_match(f + 0x8D, "A1 ?? ?? ?? ?? 85 C0 74 ?? 83 3D ?? ?? ?? ?? 00 D9 04 85")) {
+    uint8_t* blk = find_index_block(f);
+    if (!blk) {
         log_line("  BOOST-001: FUN_006f7340 body has an unexpected shape - refused");
         return false;
     }
-    g_index = (volatile int32_t*)read_abs(f + 0x8E);
-    g_engaged = (volatile int32_t*)read_abs(f + 0x98);
-    g_table = (volatile float*)read_abs(f + 0xA0);
+    g_index = (volatile int32_t*)read_abs(blk + 1);
+    g_engaged = (volatile int32_t*)read_abs(blk + 0xB);
+    g_table = (volatile float*)read_abs(blk + 0x13);
     if (!g_index || !g_engaged || !g_table) return false;
     log_line("  BOOST-001: index gva=0x%08X engaged gva=0x%08X table gva=0x%08X {%.0f,%.0f,%.0f}",
              rt_to_gva_exe((void*)g_index), rt_to_gva_exe((void*)g_engaged), rt_to_gva_exe((void*)g_table),
