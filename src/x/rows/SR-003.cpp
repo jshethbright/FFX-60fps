@@ -13,8 +13,54 @@ typedef void(__cdecl* reset_t)(void);
 static reset_t g_reset = nullptr;
 static bool    g_armed = true;
 
-// Globals by VA, valid only because install() proved this build (FUN_0086da10 at its expected VA).
-static uint8_t* gva(uint32_t va) { return exe_base() + (va - 0x400000); }
+// Globals: named by their BuildID 25501027 VA, resolved at install from a code site that uses each one (other
+// FFX.exe builds move them: the pre-01/10/2026 build is 8..0x48 bytes off in this range, U+D 02/11/2026).
+// S: re/decomp asm at the site VAs below; each pattern was unique there and its operand(s) gave the listed VA.
+static const struct Glob { uint32_t va, span; const char* label; const char* pat; uint32_t site; int off; } k_globs[] = {
+    {0x01330288, 0xA0, "SR-003 pad block (FUN_00888ec0)",          "8B 45 08 03 45 0C C1 E0 08 05 ?? ?? ?? ?? 5D C3", 0x888EC3, 10},
+    {0x0112A8E3, 1, "SR-003 battle result b (FUN_00790d..)",       "85 C0 74 07 C6 05 ?? ?? ?? ?? 06 E8 ?? ?? ?? ?? 85 C0 0F 84", 0x790DAA, 6},
+    {0x0112A8E0, 1, "SR-003 battle state (FUN_00790d..)",          "C6 05 ?? ?? ?? ?? 01 C6 05 ?? ?? ?? ?? 05 EB 09 A0 ?? ?? ?? ?? 3C 01", 0x790DE4, 2},
+    {0x0112C9F1, 1, nullptr, nullptr, 0x790DE4, 9},              // same site as the battle state
+    {0x01340824, 4, "SR-003 menu/pause/screen request (FUN_00820750)",
+                                                                   "56 33 F6 39 35 ?? ?? ?? ?? 75 77 39 35 ?? ?? ?? ?? 75 6F 83 3D ?? ?? ?? ?? FF 74 44", 0x820750, 5},
+    {0x01340828, 4, nullptr, nullptr, 0x820750, 13},
+    {0x012FBC38, 4, nullptr, nullptr, 0x820750, 21},
+    {0x01340850, 4, "SR-003 pause 2 (0x6571CB)",                   "E8 ?? ?? ?? ?? 8B C8 E8 ?? ?? ?? ?? A1 ?? ?? ?? ?? 85 C0 74 09 50", 0x6571BF, 13},
+    {0x00CCB994, 4, "SR-003 HD system UI busy (FUN_0063ff70)",     "8B EC 53 33 DB 39 1D ?? ?? ?? ?? 56 8B 35 ?? ?? ?? ?? 0F 94 C3", 0x63FF71, 7},
+    {0x0133084C, 4, "SR-003 map change in flight (FUN_0088d3d0)",  "83 3D ?? ?? ?? ?? 00 74 6D 56 E8", 0x88D3D0, 2},
+    {0x0112CA90, 2, "SR-003 room (0x86BB16)",                      "85 C0 75 36 0F B7 05 ?? ?? ?? ?? 50 E8 ?? ?? ?? ?? 83 C4 04", 0x86BB12, 7},
+    {0x00C40E28, 4, "SR-003 movie id (0x76EA1F)",                  "E8 ?? ?? ?? ?? 33 C0 C7 05 ?? ?? ?? ?? FF FF FF FF C3", 0x76EA18, 9},
+    {0x0112A00C, 4, "SR-003 movie playing (0x653D3D)",             "8B 7D F0 83 3D ?? ?? ?? ?? 00 0F 84", 0x653D3A, 5},
+    {0x01327108, 4, "SR-003 quit countdown (0x8215B3)",            "85 C0 74 33 83 3D ?? ?? ?? ?? 01 75 2A A1", 0x8215AF, 6},
+    {0x01326B48, 4, "SR-003 battle flags / loss allowed (0x861289)", "0C 02 88 46 03 A1 ?? ?? ?? ?? A9 00 40 00 00 75 19", 0x861284, 6},
+};
+static const int NGLOB = (int)(sizeof(k_globs) / sizeof(k_globs[0]));
+static uint8_t* g_glob[NGLOB];
+static uint8_t  g_dummy[0x100];
+
+static bool resolve_globals() {
+    uint8_t* site = nullptr;
+    for (int i = 0; i < NGLOB; i++) {
+        const Glob& g = k_globs[i];
+        if (g.pat) site = sig_find_unique(g.label, g.pat, g.site);
+        g_glob[i] = site ? read_abs(site + g.off) : nullptr;
+        if (!g_glob[i]) { log_line("  SR-003: global 0x%08X not resolved - refused", g.va); return false; }
+        // the battle state site writes the state (+2) and reads it back (+17); both operands must agree
+        if (g.va == 0x0112A8E0 && read_abs(site + 17) != g_glob[i]) {
+            log_line("  SR-003: battle state operands disagree - refused");
+            return false;
+        }
+        if (rt_to_gva_exe(g_glob[i]) != g.va)
+            log_line("  SR-003: global 0x%08X is at gva 0x%08X in this build", g.va, rt_to_gva_exe(g_glob[i]));
+    }
+    return true;
+}
+// A global (or a field of the pad block) by its BuildID 25501027 VA. Only called after install() resolved them all.
+static uint8_t* gva(uint32_t va) {
+    for (int i = 0; i < NGLOB; i++)
+        if (va >= k_globs[i].va && va < k_globs[i].va + k_globs[i].span) return g_glob[i] + (va - k_globs[i].va);
+    return g_dummy;                                 // not reached: every VA used below is in k_globs
+}
 template <typename T> static T rd(uint32_t va) { return *(volatile T*)gva(va); }
 
 static uint16_t g_chord = 0x090F;          // default L1+L2+R1+R2+Start+Select
@@ -120,10 +166,7 @@ static bool install() {
         "E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 6A 01 6A FF E8 ?? ?? ?? ?? 83 C4 08 E8 ?? ?? ?? ?? 85 C0 78 0E",
         0x86DA10);
     if (!fn) return false;
-    if (rt_to_gva_exe(fn) != 0x86DA10) {
-        log_line("  SR-003: FUN_0086da10 not at its expected VA (other build); the globals would be stale - refused");
-        return false;
-    }
+    if (!resolve_globals()) return false;
     g_reset = (reset_t)fn;
     config_str("fps60", "soft_reset", g_chord_text, sizeof(g_chord_text), "L1+L2+R1+R2+START+SELECT");
     uint16_t m = parse_chord(g_chord_text);
