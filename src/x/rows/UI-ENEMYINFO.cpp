@@ -2,54 +2,81 @@
 #include "../fps60.h"
 
 namespace {
-using draw_fn = void (__cdecl*)(int window, int x, int y);
+using status_draw_fn = void (__cdecl*)(int window, int x, int y);
+using scan_draw_fn = void (__cdecl*)(int x, int y);
 
-uint8_t* entry = nullptr;
-volatile uint16_t* ticks = nullptr;
-draw_fn original_draw = nullptr;
+uint8_t* status_entry = nullptr;
+uint8_t* scan_entry = nullptr;
+volatile uint16_t* status_ticks = nullptr;
+volatile uint16_t* scan_ticks = nullptr;
+status_draw_fn original_status = nullptr;
+scan_draw_fn original_scan = nullptr;
 
-void __cdecl draw_status(int window, int x, int y) {
+template<typename Draw, typename... Args>
+void draw_with_stock_timer(volatile uint16_t* ticks, Draw draw, Args... args) {
     if (g_disabled || pacing_kind() != INV_BUILD) {
-        original_draw(window, x, y);
+        draw(args...);
         return;
     }
 
-    // The draw advances the status index only if the countdown starts at zero.
-    // Draw the existing status on render-only passes, even when a logic tick
-    // has just brought the countdown to zero.
+    // The native draw advances the list only if the countdown starts at zero.
+    // Keep drawing the current entry between logic ticks, including at zero.
     const uint16_t saved = *ticks;
     *ticks = 1;
-    original_draw(window, x, y);
+    draw(args...);
     *ticks = saved;
 }
 
-bool install() {
-    entry = sig_find_unique("UI-ENEMYINFO enemy status draw",
-        "55 8B EC 51 66 A1 ?? ?? ?? ?? 66 8B C8 66 48 66 A3 ?? ?? ?? ?? "
-        "66 85 C9 75 2C B8 14 00 00 00 66 A3 ?? ?? ?? ??",
-        0x895240);
-    if (!entry) return false;
+void __cdecl draw_status(int window, int x, int y) {
+    draw_with_stock_timer(status_ticks, original_status, window, x, y);
+}
 
-    auto* timer = read_abs(entry + 6);
-    if (!timer || read_abs(entry + 17) != timer || read_abs(entry + 33) != timer) {
-        log_line("UI-ENEMYINFO: inconsistent countdown operands - refused");
-        return false;
+void __cdecl draw_scan(int x, int y) {
+    draw_with_stock_timer(scan_ticks, original_scan, x, y);
+}
+
+volatile uint16_t* countdown(uint8_t* step) {
+    // MOV AX,[countdown]; MOV CX,AX; DEC AX; MOV [countdown],AX;
+    // TEST CX,CX; JNZ; MOV EAX,20; MOV [countdown],AX.
+    if (!sig_match(step, "66 A1 ?? ?? ?? ?? 66 8B C8 66 48 66 A3 ?? ?? ?? ?? "
+                         "66 85 C9 75 ?? B8 14 00 00 00 66 A3 ?? ?? ?? ??")) {
+        return nullptr;
     }
-    ticks = reinterpret_cast<volatile uint16_t*>(timer);
-    return true;
+    auto* timer = read_abs(step + 2);
+    if (!timer || read_abs(step + 13) != timer || read_abs(step + 29) != timer) {
+        return nullptr;
+    }
+    return reinterpret_cast<volatile uint16_t*>(timer);
+}
+
+bool install() {
+    status_entry = sig_find_unique("UI-ENEMYINFO enemy status draw",
+        "55 8B EC 51 66 A1 ?? ?? ?? ?? 66 8B C8 66 48 66 A3 ?? ?? ?? ?? "
+        "66 85 C9 75 2C B8 14 00 00 00 66 A3 ?? ?? ?? ??", 0x895240);
+    if (status_entry) status_ticks = countdown(status_entry + 4);
+
+    scan_entry = sig_find_unique("UI-ENEMYINFO Scan panel draw",
+        "55 8B EC 83 EC 18 6A 00 6A 00 8D 45 FC 50 8D 45 F8 50 "
+        "0F BF 05 ?? ?? ?? ?? 50 E8 ?? ?? ?? ?? 83 C4 04 50 6A 00", 0x89BF70);
+    if (scan_entry) scan_ticks = countdown(scan_entry + 0x775);
+
+    if (!status_ticks) log_line("UI-ENEMYINFO: enemy status countdown was not found");
+    if (!scan_ticks) log_line("UI-ENEMYINFO: Scan immunities countdown was not found");
+    return status_ticks || scan_ticks;
 }
 
 void pre() {
-    if (original_draw) return;
-    if (!hook_entry("UI-ENEMYINFO enemy status draw", entry, (void*)&draw_status, (void**)&original_draw)) {
-        row_UIENEMYINFO.on = 0;
-        log_line("UI-ENEMYINFO: draw hook failed - disabled");
-    }
+    if (original_status || original_scan) return;
+    bool status_ok = status_ticks && hook_entry("UI-ENEMYINFO enemy status draw",
+        status_entry, (void*)&draw_status, (void**)&original_status);
+    bool scan_ok = scan_ticks && hook_entry("UI-ENEMYINFO Scan immunities draw",
+        scan_entry, (void*)&draw_scan, (void**)&original_scan);
+    row_UIENEMYINFO.on = status_ok || scan_ok;
 }
 }  // namespace
 
 Row row_UIENEMYINFO = {
     "UI-ENEMYINFO",
-    "enemy Info window status text rotates at stock speed",
+    "enemy Info status and Scan immunity text rotate at stock speed",
     1, install, pre, nullptr, 0
 };
