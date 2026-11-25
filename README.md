@@ -34,6 +34,12 @@ diagnostic switches) is the development copy, `fps60.ini` in the source tree. `s
 
 `fps60.log` in the game folder lists what the mod found and turned on.
 
+Flashing field-menu pointers, such as the Armor pointer behind the item list, blink about twice per second
+when the menu counter runs at 60 Hz. Set `UI-MENU-001=0` under `[rows]` to restore the original blink.
+
+For a Steam Input controller binding that works with Num Lock off, set `DEV-TURBO-KEY=120` under `[rows]`
+and bind a controller button to **F9**. Hold it to fast-forward. `DEV-TURBO-SPEED=10` requests 10x speed.
+
 ### Frame rate
 
 `fps=<n>` under `[fps60]`, where `n` is any multiple of 30 from 60 to 240 - so 60, 90, 120, 150, 180, 210 or
