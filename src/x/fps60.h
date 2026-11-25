@@ -199,6 +199,7 @@ extern Row row_UIBTLL1;                         // rows/UI-BTLL1.cpp (battle L1 
 extern Row row_UI014;                           // rows/UI-014.cpp (minimap arrow pulse per logic tick)
 extern Row row_UIMENU001;                       // rows/UI-MENU-001.cpp (field-menu cursor blink)
 extern Row row_UIENEMYINFO;                     // rows/UI-ENEMYINFO.cpp (enemy status text rotation)
+extern Row row_MAPVIDEO001;                     // rows/MAPVIDEO-001.cpp (in-world video timing)
 extern Row row_PERF001;                         // rows/PERF-001.cpp (1 ms timer, no power throttling)
 extern Row row_PERF002;                         // rows/PERF-002.cpp (stock 30 fps when 60 is not held)
 extern Row row_QOLSENSOR;                       // rows/QOL-SENSOR.cpp (gameplay: party always has Sensor)

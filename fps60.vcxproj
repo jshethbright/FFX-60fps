@@ -157,6 +157,7 @@
     <ClCompile Include="src\x\rows\UI-014.cpp" />
     <ClCompile Include="src\x\rows\UI-MENU-001.cpp" />
     <ClCompile Include="src\x\rows\UI-ENEMYINFO.cpp" />
+    <ClCompile Include="src\x\rows\MAPVIDEO-001.cpp" />
     <ClCompile Include="src\x\rows\PERF-001.cpp" />
     <ClCompile Include="src\x\rows\PERF-002.cpp" />
     <ClCompile Include="src\x\rows\BOOST-001.cpp" />
