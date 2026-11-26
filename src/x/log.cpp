@@ -38,12 +38,17 @@ bool hot_copy() {
 
 void log_open() {
     if (g_log_init) return;
-    InitializeCriticalSection(&g_log_cs);
-    g_log_init = true;
-
     wchar_t path[MAX_PATH];
     game_dir(path, MAX_PATH);
     if (!path[0] || lstrlenW(path) > MAX_PATH - 20) return;
+
+    wchar_t config[MAX_PATH];
+    lstrcpyW(config, path);
+    lstrcatW(config, L"fps60.ini");
+    if (!GetPrivateProfileIntW(L"fps60", L"logging", 1, config)) return;
+
+    InitializeCriticalSection(&g_log_cs);
+    g_log_init = true;
     // Dev hot reload: the previous copy closed the log; continue the same file.
     if (hot_copy()) {
         lstrcatW(path, L"fps60.log");
