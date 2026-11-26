@@ -19,6 +19,8 @@ To uninstall, delete `fps60_ffx.dll` (FFX then runs stock), or also `dbghelp.dll
   that file is present; otherwise the game runs stock. FFX-2 is not affected unless its own mod DLL is installed.
 - **Other `dbghelp.dll` mods:** they can't be installed at the same time, since they use the same file name.
 
+The standalone battle sound cue guard is available in [FFXOptimizations](https://github.com/jshethbright/FFXOptimizations#optional-startup-and-battle-fixes).
+
 ## Settings
 
 `fps60.ini` is read when the game starts. The release copy lists only the settings players may want to change;
