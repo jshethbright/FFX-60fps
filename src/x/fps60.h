@@ -175,6 +175,7 @@ extern Row row_MAG032;                           // rows/MAG-032.cpp (family-B u
 extern Row row_W2S001;                          // rows/W2S-001.cpp (2D HUD animation tracks step on logic ticks only)
 extern Row row_FX013;                            // rows/FX-013.cpp (bigger draw packet and particle pools)
 extern Row row_FX014;                            // rows/FX-014.cpp (effect time counter rolled back on render-only invocations)
+extern Row row_FX015;                            // rows/FX-015.cpp (optional battle sound cue guard)
 int  draw_packet_cap();                          // FX-013: draw packets per pool now (0x156 stock)
 extern Row row_FX012;                            // rows/FX-012.cpp (PPP pool full: failed-init program ended, pool use logged)
 bool fx012_failed(void* prog);                   // FX-012: a program whose init failed; MAG-006's step detour returns 1
