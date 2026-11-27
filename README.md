@@ -21,6 +21,8 @@ To uninstall, delete `fps60_ffx.dll` (FFX then runs stock), or also `dbghelp.dll
 
 The standalone battle sound cue guard is available in [FFXOptimizations](https://github.com/jshethbright/FFXOptimizations#optional-startup-and-battle-fixes).
 
+Installing the updated `FFXRuntimeFixes.dll` from FFXOptimizations adds an **FMV Volume** slider to the in-game Config menu. Left and right adjust movie volume in steps of 5, with 50 as the original level. [FMV Volume setup](https://github.com/jshethbright/FFXOptimizations#fmv-volume)
+
 ## Settings
 
 `fps60.ini` is read when the game starts. The release copy lists only the settings players may want to change;

@@ -303,6 +303,60 @@ static void set_saveicon(int v) { row_set(row_QOLSAVEICON, v == 1); }
 static int  get_vsync()   { return row_get(row_VSYNC); }
 static void set_vsync(int v) { row_set(row_VSYNC, v == 0); }
 
+// The runtime fixes module owns movie audio and persists the setting. The menu is
+// optional and exposes the control only when the module's movie hook is active.
+using FmvVolume = int (__cdecl*)(int);
+static FmvVolume g_fmv_volume = nullptr;
+static int g_fmv_level = 50;
+static uint8_t g_fmv_value[8];
+static uint8_t g_fmv_blank[] = {0};
+static uint8_t g_fmv_label[] = "\x55\x5c\x65\x3a\x65\x7e\x7b\x84\x7c\x74"; // FMV Volume
+static uint8_t g_fmv_help[] = // Movie volume. 50 is original. 100 is double gain.
+    "\x5c\x7e\x85\x78\x74\x3a\x85\x7e\x7b\x84\x7c\x74\x48\x3a\x35\x30\x3a\x78\x82\x3a"
+    "\x7e\x81\x78\x76\x78\x7d\x70\x7b\x48\x3a\x31\x30\x30\x3a\x78\x82\x3a"
+    "\x73\x7e\x84\x71\x7b\x74\x3a\x76\x70\x78\x7d\x48";
+using DrawRect = void (__cdecl*)(float, float, float, float, uint32_t, uint32_t);
+using ScaleCoord = float (__cdecl*)(float);
+static DrawRect g_fmv_rect = nullptr;
+static ScaleCoord g_fmv_x = nullptr, g_fmv_y = nullptr;
+
+static bool fmv_available() {
+    if (ffx_text_lang() >= 5) return false;                    // English label uses the western font table
+    if (!g_fmv_volume) {
+        HMODULE module = GetModuleHandleW(L"FFXRuntimeFixes.dll");
+        if (module) g_fmv_volume = reinterpret_cast<FmvVolume>(GetProcAddress(module, "FFXGetSetFmvVolume"));
+    }
+    return g_fmv_volume && g_fmv_volume(-1) >= 0;
+}
+
+static int get_fmv() {
+    const int value = g_fmv_volume ? g_fmv_volume(-1) : -1;
+    if (value >= 0) g_fmv_level = value;
+    g_fmv_value[fps_put(g_fmv_value, g_fmv_level)] = 0;
+    return 1;
+}
+
+static void set_fmv(int slot) {
+    if (!g_fmv_volume || slot < 0 || slot > 2 || slot == 1) return;
+    const int value = g_fmv_volume(-1);
+    if (value < 0) return;
+    int next = value + (slot - 1) * 5;
+    if (next < 0) next = 0;
+    if (next > 100) next = 100;
+    g_fmv_volume(next);
+}
+
+static void draw_fmv_slider(int index, int count) {
+    const float width = 280.0f;
+    const float filled = width * static_cast<float>(g_fmv_level) / 100.0f;
+    const float x = 775.0f, y = static_cast<float>(index * g_list_h / count + g_text_y + 12.0);
+    constexpr uint32_t track = 0x8050443C, fill = 0x80D0B269, thumb = 0x80F0EEE8;
+    g_fmv_rect(g_fmv_x(x), g_fmv_y(y), g_fmv_x(width), g_fmv_y(6.0f), track, track);
+    if (filled > 0.0f)
+        g_fmv_rect(g_fmv_x(x), g_fmv_y(y), g_fmv_x(filled), g_fmv_y(6.0f), fill, fill);
+    g_fmv_rect(g_fmv_x(x + filled - 4.0f), g_fmv_y(y - 4.0f), g_fmv_x(8.0f), g_fmv_y(14.0f), thumb, thumb);
+}
+
 struct Opt {                                        // T_* = text_strings.h ids (text/strings.json, per language)
     int  label;
     int  vals[4];                                   // -1 = stock ON / OFF text
@@ -330,8 +384,9 @@ static const Opt k_opts[] = {
     { T_L_VOICE,  { -1, -1 }, { T_H_VOICE_ON, T_H_VOICE_OFF }, 2, get_voice, set_voice },     // CLK-013 (opt-in)
     { T_L_SAVEICON, { -1, -1 }, { T_H_SAVEICON_ON, T_H_SAVEICON_OFF }, 2, get_saveicon, set_saveicon },   // QOL-SAVEICON
     { T_L_VSYNC,  { -1, -1 }, { T_H_VSYNC_ON, T_H_VSYNC_OFF }, 2, get_vsync, set_vsync },     // VSYNC (option)
+    { -1, { -1, -1, -1 }, { -1, -1, -1 }, 3, get_fmv, set_fmv, fmv_available },
 };
-enum { N_OPTS = sizeof(k_opts) / sizeof(k_opts[0]), OPT_FPS = 0, OPT_FURY = 6 };
+enum { N_OPTS = sizeof(k_opts) / sizeof(k_opts[0]), OPT_FPS = 0, OPT_FURY = 6, OPT_FMV = N_OPTS - 1 };
 static_assert(OPT_FURY < N_OPTS, "OPT_FURY indexes k_opts");
 
 static CfgRow g_rows[N_OPTS];
@@ -361,11 +416,11 @@ static void __cdecl row_apply(CfgRow* r) {
         int now = k_opts[i].get();
         if (i == OPT_FPS) log_line("CFG-MENU: Frame Rate %d fps", k_fps[FPS_MID]);   // the spinner re-centres: now != cur
         else if (i == OPT_FURY) log_line("CFG-MENU: Fast Fury %d casts (0 = off)", qol_fury_casts());
-        else if (now != r->cur) log_line("CFG-MENU: option %d could not change (shows value %d)", i, now);
+        else if (i != OPT_FMV && now != r->cur) log_line("CFG-MENU: option %d could not change (shows value %d)", i, now);
         g_dirty = true;
         for (int k = 0; k < N_OPTS; k++) refresh(&g_rows[k]);   // a row may depend on this one (Non-Fighter AP)
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        log_line("CFG-MENU: %s apply faulted", k_opts[i].label);
+        log_line("CFG-MENU: option %d apply faulted", i);
     }
 }
 
@@ -406,12 +461,14 @@ static void __cdecl h_enter(void* desc) {
             g_top = 0;
             if (cur && n > 0 && n <= MAX_STOCK) {
                 memcpy(g_arr, cur, n * sizeof(void*));
-                for (int i = 0; i < N_OPTS; i++) g_arr[n + i] = &g_rows[i];
+                int added = 0;
+                for (int i = 0; i < N_OPTS; i++)
+                    if (i != OPT_FMV || fmv_available()) g_arr[n + added++] = &g_rows[i];
                 *g_array = g_arr;
-                *g_count = n + N_OPTS;
+                *g_count = n + added;
                 g_desc_state = (volatile int32_t*)((uint8_t*)desc + 0x1C);
                 static bool once = false;
-                if (!once) { once = true; log_line("CFG-MENU: Config page opened: %d stock rows + %d mod rows", n, N_OPTS); }
+                if (!once) { once = true; log_line("CFG-MENU: Config page opened: %d stock rows + %d mod rows", n, added); }
             } else {
                 log_line("CFG-MENU: unexpected Config row list (%p, %d) - left stock", cur, n);
             }
@@ -426,28 +483,39 @@ static void __cdecl h_enter(void* desc) {
 // Cfg_DrawRow(0, 0, idx). The row object is read from the live array rather than trusting idx, so it is right
 // whatever CFG-MENU-SCROLL is doing to the window.
 static void __cdecl h_rowdraw(int a, int b, int idx) {
-    bool spin = false;
-    if (!g_disabled && g_val_op[0]) {
+    bool spin = false, fmv = false;
+    int count = 0;
+    if (!g_disabled) {
         __try {
             void** arr = (void**)*g_array;
-            if (arr && idx >= 0 && idx < *g_count) spin = arr[idx] == (void*)&g_rows[OPT_FPS] || arr[idx] == (void*)&g_rows[OPT_FURY];
+            count = *g_count;
+            if (arr && idx >= 0 && idx < count) {
+                spin = g_val_op[0] && (arr[idx] == &g_rows[OPT_FPS] || arr[idx] == &g_rows[OPT_FURY]);
+                fmv = arr[idx] == &g_rows[OPT_FMV];
+            }
         } __except (EXCEPTION_EXECUTE_HANDLER) {}
     }
     g_val_base = spin ? k_spin_base : k_base;
     g_val_step = spin ? k_spin_step : k_step;
     g_row_draw(a, b, idx);
+    if (fmv && g_fmv_rect) draw_fmv_slider(idx, count);
 }
 
 static uint8_t* lookup(uint32_t id, bool help) {
     id &= 0xFFFF;
     if (g_fps_lang != ffx_text_lang()) build_fps_text();         // the player changed the game's text language
     if (g_fury_lang != ffx_text_lang()) build_fury_text();
-    if (id >= ID_LABEL && id < ID_LABEL + N_OPTS && !help)
-        return id - ID_LABEL == OPT_FPS ? g_fps_label : (uint8_t*)ffx_text(k_opts[id - ID_LABEL].label);
+    if (id >= ID_LABEL && id < ID_LABEL + N_OPTS && !help) {
+        int i = id - ID_LABEL;
+        if (i == OPT_FPS) return g_fps_label;
+        if (i == OPT_FMV) return g_fmv_label;
+        return (uint8_t*)ffx_text(k_opts[i].label);
+    }
     if (id >= ID_VALUE && id < ID_VALUE + N_OPTS * 4) {
         int i = (id - ID_VALUE) / 4, v = (id - ID_VALUE) % 4;
         if (v >= k_opts[i].nvals) v = 0;
         if (i == OPT_FPS) return help ? g_fps_help[v] : g_fps_val[v];
+        if (i == OPT_FMV) return help ? g_fmv_help : (v == 1 ? g_fmv_value : g_fmv_blank);
         if (i == OPT_FURY) {
             if (help) return g_fury_help[v];
             return k_fury[v] == 0 ? g_label(ID_OFF) : g_fury_val[v];   // 0 = the stock OFF text; blank slot = ""
@@ -578,7 +646,25 @@ static bool install() {
         }
     }
 
-    if (config_row("CFG-MENU-SPIN", 1) && g_draw_fn) {
+    if (g_draw_fn) {
+        // Reuse the exact rectangle and coordinate scalers called by the stock Config row background.
+        const uint8_t* scaler = sig_find_unique("CFG-MENU slider scalers",
+            "D9 05 ?? ?? ?? ?? 51 D9 1C 24 E8 ?? ?? ?? ?? D9 5D F8 D9 05 ?? ?? ?? ?? D9 1C 24 E8 ?? ?? ?? ?? D9 5D FC 83 C4 04",
+            0x8CB536);
+        const uint8_t* rect = sig_find_unique("CFG-MENU slider rectangle",
+            "D9 45 08 D9 1C 24 E8 ?? ?? ?? ?? D9 05 ?? ?? ?? ?? 83 C4 18 68 00 00 00 26",
+            0x8CB59D);
+        if (scaler && rect) {
+            g_fmv_x = reinterpret_cast<ScaleCoord>(call_target(scaler + 10));
+            g_fmv_y = reinterpret_cast<ScaleCoord>(call_target(scaler + 27));
+            if (g_fmv_x && g_fmv_y) g_fmv_rect = reinterpret_cast<DrawRect>(call_target(rect + 6));
+        }
+        // Cfg_DrawRow: the loop's own call target, cdecl(0, 0, row index)
+        g_row_fn = call_target(g_draw_fn + 0x15);
+        if (!g_row_fn || !sig_match(g_row_fn, "55 8B EC 81 EC 34 02 00 00")) g_row_fn = nullptr;
+    }
+
+    if (config_row("CFG-MENU-SPIN", 1) && g_row_fn) {
         // The three reads of the value step and the two of the value base, all inside Cfg_DrawRow.
         struct VSite { const char* name; const char* pat; uint32_t va; float want; };
         static const VSite k_vsites[VAL_N] = {
@@ -601,12 +687,6 @@ static bool install() {
                 ok = false;
             }
         }
-        // Cfg_DrawRow: the loop's own call target, cdecl(0, 0, row index)
-        g_row_fn = ok ? call_target(g_draw_fn + 0x15) : nullptr;
-        if (ok && (!g_row_fn || !sig_match(g_row_fn, "55 8B EC 81 EC 34 02 00 00"))) {
-            log_line("  CFG-MENU-SPIN: Cfg_DrawRow not at the loop's call target - Frame Rate row at stock spacing");
-            ok = false;
-        }
         if (ok) {
             void* tgt[VAL_N] = { &g_val_step, &g_val_step, &g_val_step, &g_val_base, &g_val_base };
             for (int i = 0; i < VAL_N && ok; i++) {
@@ -626,7 +706,7 @@ static bool install() {
                 log_line("  CFG-MENU-SPIN: operand patch failed - Frame Rate row at stock spacing");
             }
         }
-        if (!ok) { g_row_fn = nullptr; for (auto& op : g_val_op) op = nullptr; }
+        if (!ok) for (auto& op : g_val_op) op = nullptr;
     }
 
     for (int i = 0; i < N_OPTS; i++) {
