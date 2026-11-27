@@ -25,6 +25,7 @@ bool smooth_live(int row = 0);           // runtime toggle (F7; Ctrl+F7 turns SM
 void smooth_poll_hotkey();               // F7 edge; called from each SMOOTH row's pre()
 bool smooth_enabled();                   // F7/menu switch on and at least one SMOOTH row on
 void smooth_set(bool on);                // CFG-MENU: the F7 switch, installing the rows if SMOOTH=0 at start
+bool smooth_camera_cut();                // latest successful camera finalize snapped to the current logic tick
 
 // Interpolation: out = a..b at t for a world transform (row-vector, translation in
 // row 3, rows = scale x rotation): translation lerp, rotation slerp (quaternion of the row-normalised

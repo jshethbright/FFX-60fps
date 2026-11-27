@@ -31,6 +31,7 @@ static ActHist* g_h = nullptr;             // MAXA entries
 static uint8_t* g_hist_base = nullptr;     // actor array the history belongs to
 static int   g_kind = INV_STOCK;
 static bool  g_applied_inv = false;
+static bool  g_blended_inv = false;
 static int   g_bis = 0;                     // dev: Ctrl+Num 2 stub bisect
 // SMOOTH-002-SCRUB (default 1, 17/10/2026): Ch_DrawMain reads at least one stack word it never set (S: the specular
 // camera vector's w at [EBP-0x3C8], 0x82FBE1, used at 0x82FC0F/0x82FC59 before its write at 0x82FC9C; there may be
@@ -134,12 +135,14 @@ static void apply_children(uint8_t* base, int n) {
 }
 
 static void record();
+static void restore();
 
 // Logic/backlog invocation, lerp(tick k-1, tick k, t) with t = 1/N. The history is
 // rotated first from the canonical roots (fresh tick k).
 static void apply_interp(float t) {
     record();
     g_recorded_inv = true;
+    if (smooth_camera_cut()) return;                 // keep the current shot's canonical positions
     uint8_t* base;
     int n;
     if (!begin(&base, &n)) return;
@@ -228,7 +231,10 @@ static void apply_render_hold() {
 // magic DLL's update, which writes the EXE actor table): it is drawn on the same curve, which is what
 // SMOOTH-002-RENDERHOLD does at t = 1. A warp is never blended; it is only pinned back to tick k.
 static void apply_render(float t) {
-    if (t >= 1.0f) { apply_render_hold(); return; }
+    if (t >= 1.0f || smooth_camera_cut()) {
+        if (g_renderhold) apply_render_hold();
+        return;
+    }
     uint8_t* base;
     int n;
     if (!begin(&base, &n)) return;
@@ -308,6 +314,16 @@ static void diag_actors() {
 static void __cdecl h_draw() {
     bool applied = false;
     float t = pacing_t();
+    const bool cut = smooth_camera_cut();
+    // A later viewport may cut after an earlier one applied a blend in this invocation.
+    if (g_blended_inv && cut) {
+        g_blended_inv = false;
+        __try {
+            restore();
+            if (g_kind == INV_BUILD && g_renderhold) apply_render_hold();
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("SMOOTH-002 camera cut", GetExceptionCode()); }
+    }
     static LONG dumped = -1;
     if (g_diag && (g_kind == INV_LOGIC) && g_lwindows % 600 == 300 && dumped != g_lwindows) {
         dumped = g_lwindows;
@@ -334,6 +350,7 @@ static void __cdecl h_draw() {
         g_applied_inv = true;
         g_lwindows++;
         applied = true;
+        g_blended_inv = !cut && t < 1.0f;
         __try { apply_interp(t); }
         __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("SMOOTH-002 apply", GetExceptionCode()); }
     // Before the last pass of a period there is a frame to draw between the ticks whether or not RENDERHOLD
@@ -342,6 +359,7 @@ static void __cdecl h_draw() {
                g_kind == INV_BUILD && (g_renderhold || t < 1.0f)) {
         g_applied_inv = true;
         applied = true;
+        g_blended_inv = !cut && t < 1.0f;
         __try { apply_render(t); }
         __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("SMOOTH-002 render pass", GetExceptionCode()); }
     }
@@ -375,6 +393,7 @@ static void pre() {
     __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("SMOOTH-002 restore", GetExceptionCode()); }
     g_kind = g_disabled ? INV_STOCK : pacing_kind();
     g_applied_inv = false;
+    g_blended_inv = false;
     g_recorded_inv = false;
     if (g_kind == INV_STOCK) g_hist_base = nullptr;   // history restarts after menus / FMV hold
 }

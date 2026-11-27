@@ -99,6 +99,8 @@ struct CamHist {
 };
 static CamHist g_h[3];
 static int   g_kind = INV_STOCK;
+static bool  g_draw_cut = false;
+bool smooth_camera_cut() { return g_draw_cut; }
 // Deferred restore state (one view matrix; the last write wins).
 static bool  g_written = false;
 static bool  g_committed = false;
@@ -155,15 +157,18 @@ static void on_call(int vp) {
     g_tr_wrote = false;
 
     if (g_kind == INV_BUILD) {                                // a render-only pass inside the logic period
-        if (!smooth_live(1) || t >= 1.0f) return;             // the last pass of the period draws tick k
+        if (!smooth_live(1)) return;
         // Still the matrix we wrote for an earlier viewport this pass: writing again would save it as g_orig,
         // and pre()'s restore would hand it back as if the game had built it (same guard as the logic path).
         if (g_written && memcmp(g_view, g_out, 64) == 0) return;
+        g_draw_cut = false;
         if (tag == 1 && vp == 1) return;                      // special commit paths (MsCommitCameraFovAspect)
+        g_draw_cut = h.prev_cut || !h.valid || h.tag != tag;
+        if (t >= 1.0f) return;                               // the last pass of the period draws tick k
         // prev_cut: the logic pass found this tick was a cut and left the frame on tick k, so the passes
         // after it hold tick k as well rather than sweeping across the cut.
         if (!h.valid || !h.last_valid || h.prev_cut || h.tag != tag) { g_skip_hist++; return; }
-        draw_between(vp, tag, h.last, h.prev, h.lastfov, h.prevfov, t);
+        g_draw_cut = !draw_between(vp, tag, h.last, h.prev, h.lastfov, h.prevfov, t);
         return;
     }
     if (g_kind != INV_LOGIC && g_kind != INV_BACKLOG) return;
@@ -176,10 +181,11 @@ static void on_call(int vp) {
     float* blk = g_fovblk ? (float*)((uint8_t*)g_fovblk + vp * 0x1C0) : nullptr;
     if (blk) for (int i = 0; i < 3; i++) h.pendfov[i] = *(float*)((uint8_t*)blk + k_fovoff[i]);
     if (!smooth_live(1) || ours) return;
+    g_draw_cut = false;
     g_logic_calls++;
     if (tag == 1 && vp == 1) return;
+    g_draw_cut = h.pend_cut = true;                           // cleared once the frame is interpolated
     if (!h.valid || h.tag != tag) { g_skip_hist++; return; }
-    h.pend_cut = true;                                        // cleared below once the frame is interpolated
     // Jump: the camera moved or turned far more than in the previous tick (a cut below the 500-unit / 60-degree
     // limits, U 17/10: field cutscene cut drew one in-between frame of two shots).
     float sd, sa;
@@ -191,8 +197,8 @@ static void on_call(int vp) {
                      vp, tag, sd, sa, h.step_d, h.step_a);
         return;
     }
-    if (t >= 1.0f) { h.pend_cut = false; return; }            // a one-pass period (booster): draw tick k
-    if (draw_between(vp, tag, h.prev, g_view, h.prevfov, h.pendfov, t)) h.pend_cut = false;
+    if (t >= 1.0f || draw_between(vp, tag, h.prev, g_view, h.prevfov, h.pendfov, t))
+        g_draw_cut = h.pend_cut = false;
 }
 
 static int __cdecl h_finalize(int vp) {
@@ -261,6 +267,7 @@ static void pre() {
     __try { restore(); }
     __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("SMOOTH-001 restore", GetExceptionCode()); }
     g_kind = g_disabled ? INV_STOCK : pacing_kind();
+    g_draw_cut = false;
     g_blk_first = true;
     for (int i = 0; i < 3; i++) {
         g_h[i].has_pend = false;
