@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // UI-001: screen fades (incl. the lightning flash) step inside their draw call, which also runs on
 // render-only invocations, so fades last half as long. Fix: on those invocations let the fade draw, then
-// restore its state, so it steps once per logic tick.
+// restore its state, so it steps once per logic tick. Draw the intermediate
+// opacity between native updates without changing the timers or fade outputs.
 // Details: docs/fps60/rows/UI-001.md
 #include "../fps60.h"
 #include <string.h>
@@ -17,6 +18,90 @@ static const uint8_t* g_screen_filter = nullptr;
 static const uint32_t STATE_LEN = 0x58, OUT_LEN = 0x10, OUT2_LEN = 4;
 static volatile LONG g_held = 0, g_passed = 0;
 static int g_half = 0;                // UI-001-HALF: render-only frames draw the half step (60 Hz promotion)
+
+using overlay_t = void (__cdecl*)(float, float, float, float, int);
+using crossfade_t = void (__cdecl*)(int);
+static overlay_t g_draw_overlay = nullptr;
+static crossfade_t g_draw_crossfade = nullptr;
+
+struct FadeSample {
+    uint8_t state[0x10];
+    float rgba[4];
+    int crossfade_alpha;
+    bool has_overlay;
+    bool has_crossfade;
+};
+
+static FadeSample g_samples[5];
+static bool g_record = false;
+static unsigned g_continuing = 0;
+static float g_fraction = 0.0f;
+
+static FadeSample* fade_sample(const uint8_t* countdown) {
+    const uintptr_t offset = reinterpret_cast<uintptr_t>(countdown) - reinterpret_cast<uintptr_t>(g_state + 0xC);
+    if (offset >= 5 * 0x10 || offset % 0x10 != 0) return nullptr;
+    const unsigned index = static_cast<unsigned>(offset / 0x10);
+    return g_record || (g_continuing & (1u << index)) ? &g_samples[index] : nullptr;
+}
+
+static float fade_between(float from, float to) {
+    return from + g_fraction * (to - from);
+}
+
+static void __cdecl draw_overlay(float r, float g, float b, float a, int mode, const uint8_t* countdown) {
+    // Modes 7 and 8 are immediate filters. They share the native draw call
+    // with one fade branch but both must take effect on the same frame.
+    FadeSample* sample = mode == 0 ? fade_sample(countdown) : nullptr;
+    if (sample && (countdown[-4] < 2 || countdown[-4] > 6)) sample = nullptr;
+    float rgba[4] = {r, g, b, a};
+    if (sample && g_record) {
+        memcpy(sample->rgba, rgba, sizeof(rgba));
+        sample->has_overlay = true;
+    } else if (sample && sample->has_overlay) {
+        for (int i = 0; i < 4; ++i) rgba[i] = fade_between(sample->rgba[i], rgba[i]);
+    }
+    g_draw_overlay(rgba[0], rgba[1], rgba[2], rgba[3], mode);
+}
+
+static void __cdecl draw_crossfade(int alpha, const uint8_t* countdown) {
+    FadeSample* sample = fade_sample(countdown);
+    if (sample && g_record) {
+        sample->crossfade_alpha = alpha;
+        sample->has_crossfade = true;
+    } else if (sample && sample->has_crossfade) {
+        alpha = static_cast<int>(fade_between(static_cast<float>(sample->crossfade_alpha), static_cast<float>(alpha)) + 0.5f);
+    }
+    g_draw_crossfade(alpha);
+}
+
+// The native loop keeps the countdown pointer in ESI. Pass it as an extra
+// argument to distinguish multiple fade slots even if they share a draw call.
+__declspec(naked) static void h_draw_overlay() {
+    __asm {
+        push ebp
+        mov ebp, esp
+        push esi
+        push dword ptr [ebp + 24]
+        push dword ptr [ebp + 20]
+        push dword ptr [ebp + 16]
+        push dword ptr [ebp + 12]
+        push dword ptr [ebp + 8]
+        call draw_overlay
+        add esp, 24
+        pop ebp
+        ret
+    }
+}
+
+__declspec(naked) static void h_draw_crossfade() {
+    __asm {
+        push esi
+        push dword ptr [esp + 8]
+        call draw_crossfade
+        add esp, 8
+        ret
+    }
+}
 
 bool ui001_frame_capture_pending() {
     return g_capture_pending && *g_capture_pending != 0;
@@ -55,9 +140,18 @@ static void half_step() {
 }
 
 static void __cdecl h_fade() {
-    if (!row_UI001.on || g_disabled || pacing_kind() != INV_BUILD) {
+    const int kind = pacing_kind();
+    const bool enabled = row_UI001.on && !g_disabled;
+    const bool smooth = g_draw_overlay || g_draw_crossfade;
+    if (!enabled || kind != INV_BUILD) {
         InterlockedIncrement(&g_passed);
+        memset(g_samples, 0, sizeof(g_samples));
+        g_record = enabled && smooth && (kind == INV_LOGIC || kind == INV_BACKLOG);
         g_fade();
+        if (g_record) {
+            for (int i = 0; i < 5; ++i) memcpy(g_samples[i].state, g_state + 8 + i * 0x10, 0x10);
+        }
+        g_record = false;
         return;
     }
     uint8_t s[STATE_LEN], o[OUT_LEN], o2[OUT2_LEN];
@@ -65,11 +159,47 @@ static void __cdecl h_fade() {
     memcpy(o, g_out, OUT_LEN);
     memcpy(o2, g_out2, OUT2_LEN);
     if (g_half) half_step();
+    if (smooth && !ui001_frame_capture_pending()) {
+        // The logic frame already rendered the first endpoint. The following
+        // render-only frames approach the next native tick without advancing it.
+        const int pass = pacing_pass();
+        g_fraction = pacing_t() * static_cast<float>(pass) / static_cast<float>(pass + 1);
+        for (int i = 0; i < 5; ++i) {
+            const auto& sample = g_samples[i];
+            if ((sample.has_overlay || sample.has_crossfade) && memcmp(sample.state, s + 8 + i * 0x10, 0x10) == 0)
+                g_continuing |= 1u << i;
+        }
+    }
     g_fade();
+    g_continuing = 0;
     memcpy(g_state, s, STATE_LEN);
     memcpy(g_out, o, OUT_LEN);
     memcpy(g_out2, o2, OUT2_LEN);
     InterlockedIncrement(&g_held);
+}
+
+static void install_fade_draws(uint8_t* update) {
+    uint8_t* sites[] = {update + 0x1C9, update + 0x268, update + 0x363, update + 0x3E0, update + 0x450};
+    uint8_t* overlay = call_target(sites[0]);
+    if (!sig_match(overlay, "55 8B EC D9 45 14 68 01 10 00 00 FF 75 18")) return;
+    for (uint8_t* site : sites)
+        if (call_target(site) != overlay) return;
+    uint8_t* cross_site = update + 0x4D6;
+    uint8_t* crossfade = call_target(cross_site);
+    if (!sig_match(cross_site - 2, "98 50 E8 ?? ?? ?? ?? 83 C4 04 D9 E8")) return;
+    if (!sig_match(crossfade, "55 8B EC E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 8B 08 81 E1")) return;
+
+    g_draw_overlay = reinterpret_cast<overlay_t>(overlay);
+    g_draw_crossfade = reinterpret_cast<crossfade_t>(crossfade);
+    for (unsigned i = 0; i < sizeof(sites) / sizeof(sites[0]); ++i) {
+        if (!patch_call_rel32(sites[i], overlay, (void*)&h_draw_overlay)) {
+            for (unsigned j = 0; j < i; ++j) patch_call_rel32(sites[j], (void*)&h_draw_overlay, overlay);
+            log_line("  UI-001: overlay fade draw hooks could not be installed");
+            return;
+        }
+    }
+    if (!patch_call_rel32(cross_site, crossfade, (void*)&h_draw_crossfade))
+        log_line("  UI-001: captured-frame fade draw hook could not be installed");
 }
 
 static bool install() {
@@ -112,6 +242,7 @@ static bool install() {
         log_line("  UI-001: patch failed");
         return false;
     }
+    if (!g_half && config_row("UI-001-SMOOTH", 1)) install_fade_draws(fn);
     // The immediately following call consumes the ATEL framebuffer request after the actors,
     // camera and fade have drawn. It clears the request after storing the framebuffer.
     const uint8_t* capture = call_target(site + 5);
