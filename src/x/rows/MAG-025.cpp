@@ -266,6 +266,9 @@ static void __cdecl h_walk(uint32_t unit_ctx, uint32_t pass) {
         uint8_t* base = exe_base();
         uint8_t p = (uint8_t)pass;
         if (ret < base || ret >= base + exe_size()) {
+            // U 28/11/2026: crash after Ifrit died - a WAIT-0 stream handler ran inside a MAG-021 replay of the summon's
+            // update and read a unit that was already gone (FFX+0x668CEF, [null+4]). Replayed walks run no handlers.
+            if (mag021_replaying()) { held_walk(1, 1, unit_ctx, pass); return; }
             if (g_mode_dll && (p == 1 || (p == 0 && (g_pass0 || g_pass0_now)))) { held_walk(g_mode_dll, 1, unit_ctx, pass); return; }
         } else if (g_mode_exe && ret == g_exe_ret) {
             held_walk(g_mode_exe, 0, unit_ctx, pass);
