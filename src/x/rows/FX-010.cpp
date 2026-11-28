@@ -628,7 +628,7 @@ template <class F> static void for_particles(uint8_t* prog, F fn) {
 
 // How often each header word changes per tick, per group def (EMA, 255 = every tick). Moving parts change on every
 // tick; a stepped word (+0x12C of the Echuilles rays, ~30% of ticks) never reaches the bar, so it is never moved.
-struct DefRate { uint8_t* def; LONG seen; uint8_t r[0x800]; uint8_t big[0x800]; };   // big: word was ever > BIG_MAG
+struct DefRate { uint8_t* def; LONG seen; uint8_t r[0x800]; uint8_t big[0x800]; uint8_t packed[0x800]; };   // big: word was ever > BIG_MAG; packed: ever a 16-bit pair
 enum { NDR = 64, RATE_MIN = 200 };
 static bool floatish(float x);
 static const float BIG_MAG = 4096.0f;              // beyond field world scale: not geometry
@@ -645,6 +645,7 @@ static DefRate* def_rate(uint8_t* def, bool create) {
     old->def = def; old->seen = g_fx_n;
     memset(old->r, 0, sizeof(old->r));
     memset(old->big, 0, sizeof(old->big));
+    memset(old->packed, 0, sizeof(old->packed));
     return old;
 }
 
@@ -833,7 +834,9 @@ static void ip_apply(uint8_t* prog, float t) {
                         int dd = d1 - d0;
                         return (d0 < 0) == (d1 < 0) && 2 * (dd < 0 ? -dd : dd) <= m;
                     };
+                    DefRate* pdr = def_rate(def, false);
                     if (small(dh0) && small(dh1) && small(dl0) && small(dl1) && steady(dh0, dh1) && steady(dl0, dl1)) {
+                        if (pdr && o / 4 < 0x800) pdr->packed[o / 4] = 1;
                         int hi = (int)(pa >> 16) + (int)(t * (float)dh1 + (dh1 < 0 ? -0.5f : 0.5f));
                         int lo = (int)(pa & 0xFFFF) + (int)(t * (float)dl1 + (dl1 < 0 ? -0.5f : 0.5f));
                         if (g_ex_diag) ex_count(pi, o);
@@ -843,6 +846,10 @@ static void ip_apply(uint8_t* prog, float t) {
                         InterlockedIncrement(&g_ip_packed);
                         continue;
                     }
+                    // Once a pair, always a pair (U 28/11/2026: the window's +0x108/+0x10C are half-float pairs; where
+                    // a half crossed a power of two its step changed, the pair test failed for that tick and the word
+                    // was blended as one float: a flicker at a fixed interval). Hold it at the tick value instead.
+                    if (pdr && o / 4 < 0x800 && pdr->packed[o / 4]) continue;
                 }
                 float a = *(float*)(e->prev + o), b = *(float*)(e->cur + o);
                 if (!floatish(a) || !floatish(b)) continue;
