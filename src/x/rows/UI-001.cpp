@@ -13,12 +13,23 @@ static uint8_t* g_state = nullptr;    // active mask + 5 slots (+ two read-only 
 static uint8_t* g_out = nullptr;      // flag, flag, latch, progress float
 static uint8_t* g_out2 = nullptr;     // fade type output
 static const volatile uint32_t* g_capture_pending = nullptr;
+static const uint8_t* g_screen_filter = nullptr;
 static const uint32_t STATE_LEN = 0x58, OUT_LEN = 0x10, OUT2_LEN = 4;
 static volatile LONG g_held = 0, g_passed = 0;
 static int g_half = 0;                // UI-001-HALF: render-only frames draw the half step (60 Hz promotion)
 
 bool ui001_frame_capture_pending() {
     return g_capture_pending && *g_capture_pending != 0;
+}
+
+uint64_t ui001_screen_filter() {
+    // Types 7 and 8 are immediate subtractive/alternate color filters. The
+    // renderer reads their mode, RGB and strength directly from this slot.
+    if (!g_screen_filter || (g_state[0] & 8) == 0 ||
+        (g_screen_filter[0] != 7 && g_screen_filter[0] != 8)) return 0;
+    uint64_t filter = 0;
+    memcpy(&filter, g_screen_filter, sizeof(filter));
+    return (filter & 0x0000FFFF00000000ull) ? filter : 0;  // +4: active word
 }
 
 // UI-001-HALF: rescale each active slot so the original call draws the midpoint between two logic ticks
@@ -108,6 +119,11 @@ static bool install() {
         sig_match(capture + 0xD6, "C7 05 ?? ?? ?? ?? 00 00 00 00 5E E9") &&
         read_abs(capture + 2) == read_abs(capture + 0xD8))
         g_capture_pending = (const volatile uint32_t*)read_abs(capture + 2);
+    const uint8_t* filter = sig_find_unique("UI-001 immediate screen filter setter",
+        "55 8B EC 8B 4D 14 83 0D ?? ?? ?? ?? 08 C6 05 ?? ?? ?? ?? 07 85 C9 74 2C",
+        0x82CC20);
+    if (filter && read_abs(filter + 8) == g_state && read_abs(filter + 15) == g_state + 0x34)
+        g_screen_filter = g_state + 0x34;
     log_line("  UI-001: CALL at gva=0x%08X -> stub; Sg_ScreenFadeUpdate gva=0x%08X, state gva=0x%08X+0x%X "
              "(expected 0x01300704), outputs gva=0x%08X (0x012FFAE8), 0x%08X (0x00C496D0): render-only invocations draw, state restored; UI-001-HALF=%d",
              rt_to_gva_exe(site), rt_to_gva_exe(fn), rt_to_gva_exe(g_state), STATE_LEN, rt_to_gva_exe(g_out), rt_to_gva_exe(g_out2), g_half);

@@ -20,6 +20,7 @@ static commit_t   g_commit = nullptr;
 static float*     g_view = nullptr;           // the view matrix the draw reads (16 floats)
 static volatile uint32_t* g_src2 = nullptr;   // != 0: camera source s2 (look-at from a fixed camera block)
 static volatile uint32_t* g_src3 = nullptr;   // != 0: camera source s3 (field map camera)
+static const int32_t* g_camera_channel = nullptr;  // camera selected by native viewport finalize
 static int        g_diag = 0;
 static int        g_fov = 1;                 // SMOOTH-001-FOV: interpolate the battle camera FOV with the view
 typedef void(__cdecl* fovcommit_t)(int);
@@ -80,15 +81,25 @@ static void __cdecl h_commit(float* v) {
     g_commit_tramp(v);
 }
 
+struct CameraSource {
+    int tag;
+    int32_t channel;
+    uint64_t filter;
+
+    bool operator==(const CameraSource& other) const {
+        return tag == other.tag && channel == other.channel && filter == other.filter;
+    }
+};
+
 struct CamHist {
     float prevfov[3];    // FOV fields (camera block +0x10/+0x14/+0x1C) of the previous logic tick
     float pendfov[3];
     float lastfov[3];    // the tick before prev (render-only passes interpolate last -> prev)
     float prev[16];      // canonical matrix of the previous logic tick
     bool  valid;
-    int   tag;           // source of prev (1..3)
+    CameraSource source;
     float pend[16];      // sample of the current logic invocation
-    int   pend_tag;
+    CameraSource pend_source;
     bool  has_pend;
     float last[16];      // canonical matrix of the tick before prev
     bool  last_valid;
@@ -152,6 +163,8 @@ static bool draw_between(int vp, int tag, const float* a, const float* b, const 
 static void on_call(int vp) {
     CamHist& h = g_h[vp];
     int tag = src_tag();
+    const CameraSource source{tag, g_camera_channel ? *g_camera_channel : -1, ui001_screen_filter()};
+    const bool source_changed = !h.valid || !(h.source == source);
     float t = pacing_t();
     g_tr_ours = g_written && memcmp(g_view, g_out, 64) == 0;
     g_tr_wrote = false;
@@ -161,14 +174,13 @@ static void on_call(int vp) {
         // Still the matrix we wrote for an earlier viewport this pass: writing again would save it as g_orig,
         // and pre()'s restore would hand it back as if the game had built it (same guard as the logic path).
         if (g_written && memcmp(g_view, g_out, 64) == 0) return;
-        g_draw_cut = ui001_frame_capture_pending();
+        g_draw_cut = ui001_frame_capture_pending() || h.prev_cut || source_changed;
         if (g_draw_cut) return;
         if (tag == 1 && vp == 1) return;                      // special commit paths (MsCommitCameraFovAspect)
-        g_draw_cut = h.prev_cut || !h.valid || h.tag != tag;
         if (t >= 1.0f) return;                               // the last pass of the period draws tick k
         // prev_cut: the logic pass found this tick was a cut and left the frame on tick k, so the passes
         // after it hold tick k as well rather than sweeping across the cut.
-        if (!h.valid || !h.last_valid || h.prev_cut || h.tag != tag) { g_skip_hist++; return; }
+        if (!h.last_valid) { g_skip_hist++; return; }
         g_draw_cut = !draw_between(vp, tag, h.last, h.prev, h.lastfov, h.prevfov, t);
         return;
     }
@@ -177,19 +189,18 @@ static void on_call(int vp) {
     bool ours = g_written && memcmp(g_view, g_out, 64) == 0;  // already ours (s3: nothing rebuilt it)
     // History always holds the canonical (game) matrix, never our interpolated one.
     memcpy(h.pend, ours ? g_orig : g_view, 64);
-    h.pend_tag = tag;
+    h.pend_source = source;
     h.has_pend = true;
     float* blk = g_fovblk ? (float*)((uint8_t*)g_fovblk + vp * 0x1C0) : nullptr;
     if (blk) for (int i = 0; i < 3; i++) h.pendfov[i] = *(float*)((uint8_t*)blk + k_fovoff[i]);
     if (!smooth_live(1) || ours) return;
     // The transition stores this frame for later crossfade draws. Capture the current
     // game state, rather than the first fractional frame between the last two ticks.
-    g_draw_cut = ui001_frame_capture_pending();
+    g_draw_cut = ui001_frame_capture_pending() || source_changed;
     if (g_draw_cut) { h.pend_cut = true; return; }
     g_logic_calls++;
     if (tag == 1 && vp == 1) return;
     g_draw_cut = h.pend_cut = true;                           // cleared once the frame is interpolated
-    if (!h.valid || h.tag != tag) { g_skip_hist++; return; }
     // Jump: the camera moved or turned far more than in the previous tick (a cut below the 500-unit / 60-degree
     // limits, U 17/10: field cutscene cut drew one in-between frame of two shots).
     float sd, sa;
@@ -289,14 +300,15 @@ static void post() {
                 continue;
             }
             // Both of these read h.prev while it is still the previous tick, so they come before it rotates.
-            h.step_valid = h.valid && h.tag == h.pend_tag && !h.pend_cut && smooth_view_step(h.prev, h.pend, &h.step_d, &h.step_a);
+            h.step_valid = h.valid && h.source == h.pend_source && !h.pend_cut &&
+                           smooth_view_step(h.prev, h.pend, &h.step_d, &h.step_a);
             memcpy(h.last, h.prev, 64);                       // the pair the render-only passes interpolate
             memcpy(h.lastfov, h.prevfov, sizeof(h.lastfov));
             h.last_valid = h.valid;
             h.prev_cut = h.pend_cut;
             memcpy(h.prev, h.pend, 64);
             memcpy(h.prevfov, h.pendfov, sizeof(h.prevfov));
-            h.tag = h.pend_tag;
+            h.source = h.pend_source;
             h.valid = true;
         }
     }
@@ -353,6 +365,15 @@ static bool install() {
     g_view = (float*)(uintptr_t)view;
     g_src2 = (volatile uint32_t*)(uintptr_t)src2;
     g_src3 = (volatile uint32_t*)(uintptr_t)src3;
+    // The viewport selects a camera channel before reading its transform. Use
+    // its native ID to catch cuts even when the new transform is only a little
+    // different. Verify both the reset and selection write target that ID.
+    const uint8_t* channel = sig_find_unique("SMOOTH-001 viewport camera channel",
+        "0F B6 B7 ?? ?? ?? ?? 56 89 35 ?? ?? ?? ?? E8 ?? ?? ?? ?? 69 F6 A0 0D 00 00", 0x7BC184);
+    if (channel && channel > fin && channel < d &&
+        sig_match(fin + 6, "C7 05 ?? ?? ?? ?? FF FF FF FF") &&
+        read_abs(channel + 10) == read_abs(fin + 8))
+        g_camera_channel = (const int32_t*)read_abs(channel + 10);
     g_diag = config_row("SMOOTH-001-DIAG", 0);
     g_camlog = config_row("SMOOTH-001-CAMLOG", 0);
     g_trace = config_row("SMOOTH-001-TRACE", 0);
