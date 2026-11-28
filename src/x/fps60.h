@@ -183,6 +183,7 @@ extern Row row_DIAGFRAMETIME;                    // rows/DIAG-FRAMETIME.cpp (fra
 extern Row row_DIAGLOADHITCH;                    // rows/DIAG-LOADHITCH.cpp (slow frames: game work vs file I/O)
 extern Row row_DIAGD3DHITCH;                     // rows/DIAG-D3DHITCH.cpp (slow frames: D3D11 call times)
 extern Row row_FXPSOWARM;                         // rows/FX-PSOWARM.cpp (shader/state combos warmed at startup)
+extern Row row_FXVBRING;                          // rows/FX-VBRING.cpp (game dynamic VB through a ring, live switch)
 extern Row row_RATE001;                          // rows/RATE-001.cpp (host frame limiter retargeted to N * 29.97 Hz)
 void     mag026_draw_record(uint8_t* head, uint8_t* nd, void* cb); // MAG-020 draw-only walk -> MAG-026
 extern Row row_UI001;                            // rows/UI-001.cpp

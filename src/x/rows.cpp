@@ -39,6 +39,7 @@ static Row* g_rows[] = {
     &row_FX014,
     &row_DIAGFRAMETIME,
     &row_DIAGLOADHITCH,
+    &row_FXVBRING,
     &row_DIAGD3DHITCH,
     &row_FXPSOWARM,
     &row_UI001,

@@ -14,6 +14,11 @@
 #include <stdio.h>
 #include <string.h>
 #pragma comment(lib, "d3d11.lib")
+bool vbring_setvb(ID3D11DeviceContext*, UINT, UINT, ID3D11Buffer* const*, const UINT*, const UINT*);
+void vbring_draw(ID3D11DeviceContext*, int, uint32_t, uint32_t, int32_t, uint32_t, uint32_t);
+void vbring_present(void* dev, void* ctx);
+void vbring_set_vb_orig(void* p);
+
 
 // ---------------------------------------------------------------- record
 #pragma pack(push, 4)
@@ -138,7 +143,7 @@ static HRESULT STDMETHODCALLTYPE h_cil(ID3D11Device* d, const D3D11_INPUT_ELEMEN
 // thread before Present, a few per frame, so that work happens before the model is drawn.
 typedef HRESULT(STDMETHODCALLTYPE* ctex_t)(ID3D11Device*, const D3D11_TEXTURE2D_DESC*, const D3D11_SUBRESOURCE_DATA*, ID3D11Texture2D**);
 static ctex_t o_ctex;
-static int g_touch = 1;
+static int g_touch = 0;   // default 0: made battle-start hitches worse (D 28/11/2026: 150-214 ms frames)
 enum { TQ = 4096 };
 static ID3D11Texture2D* g_tq[TQ];
 static volatile LONG g_tq_w = 0;
@@ -209,6 +214,7 @@ static void STDMETHODCALLTYPE h_gss(ID3D11DeviceContext* c, void* s, void* const
 static void STDMETHODCALLTYPE h_il(ID3D11DeviceContext* c, ID3D11InputLayout* l) { if (track(c)) g_cur.il = l; o_il(c, l); }
 static void STDMETHODCALLTYPE h_vb(ID3D11DeviceContext* c, UINT s, UINT n, ID3D11Buffer* const* b, const UINT* st, const UINT* off) {
     if (track(c) && st) for (UINT i = 0; i < n && s + i < 8; i++) g_cur.stride[s + i] = b && b[i] ? st[i] : 0;
+    if (!g_warming && vbring_setvb(c, s, n, b, st, off)) return;
     o_vb(c, s, n, b, st, off);
 }
 static void STDMETHODCALLTYPE h_topo(ID3D11DeviceContext* c, D3D11_PRIMITIVE_TOPOLOGY t) { if (track(c)) g_cur.topo = (uint32_t)t; o_topo(c, t); }
@@ -270,10 +276,10 @@ static void on_draw(ID3D11DeviceContext* c) {
     g_recs[g_nrec] = p; g_warmed[g_nrec] = 1;          // drawn by the game already this session
     g_nrec++; g_nnew++;
 }
-static void STDMETHODCALLTYPE h_dri(ID3D11DeviceContext* c, UINT a, UINT b, INT d) { on_draw(c); o_dri(c, a, b, d); }
-static void STDMETHODCALLTYPE h_dr(ID3D11DeviceContext* c, UINT a, UINT b) { on_draw(c); o_dr(c, a, b); }
-static void STDMETHODCALLTYPE h_drii(ID3D11DeviceContext* c, UINT a, UINT b, UINT d, INT e, UINT f) { on_draw(c); o_drii(c, a, b, d, e, f); }
-static void STDMETHODCALLTYPE h_dri2(ID3D11DeviceContext* c, UINT a, UINT b, UINT d, UINT e) { on_draw(c); o_dri2(c, a, b, d, e); }
+static void STDMETHODCALLTYPE h_dri(ID3D11DeviceContext* c, UINT a, UINT b, INT d) { on_draw(c); if (!g_warming) vbring_draw(c, 1, a, b, d, 1, 0); o_dri(c, a, b, d); }
+static void STDMETHODCALLTYPE h_dr(ID3D11DeviceContext* c, UINT a, UINT b) { on_draw(c); if (!g_warming) vbring_draw(c, 0, a, b, 0, 1, 0); o_dr(c, a, b); }
+static void STDMETHODCALLTYPE h_drii(ID3D11DeviceContext* c, UINT a, UINT b, UINT d, INT e, UINT f) { on_draw(c); if (!g_warming) vbring_draw(c, 3, a, d, e, b, f); o_drii(c, a, b, d, e, f); }
+static void STDMETHODCALLTYPE h_dri2(ID3D11DeviceContext* c, UINT a, UINT b, UINT d, UINT e) { on_draw(c); if (!g_warming) vbring_draw(c, 2, a, d, 0, b, e); o_dri2(c, a, b, d, e); }
 
 static ID3D11Texture2D* scratch_for(DXGI_FORMAT f) {
     for (int i = 0; i < g_nscr; i++) if (g_scr[i].f == f) return g_scr[i].t;
@@ -386,6 +392,7 @@ static void on_present(void* scv) {
     if (!tried) { tried = true; if (!setup((IDXGISwapChain*)scv)) return; }
     if (!g_imm) return;
     d3dhitch_present(g_dev, g_imm);
+    vbring_present(g_dev, g_imm);
     static uint32_t frames = 0;
     if (++frames % 600 == 0) {
         save();
@@ -442,7 +449,7 @@ static void load() {
 static bool install() {
     QueryPerformanceFrequency(&g_qpf);
     g_reuse = config_row("FX-PSOWARM-REUSE", 1);
-    g_touch = config_row("FX-PSOWARM-TOUCH", 1);
+    g_touch = config_row("FX-PSOWARM-TOUCH", 0);
     InitializeCriticalSection(&g_cs);
     g_recs = (Pso*)calloc(MAX_RECS, sizeof(Pso));
     g_warmed = (uint8_t*)calloc(MAX_RECS, 1);
@@ -479,6 +486,7 @@ static bool install() {
               hook_entry("FX-PSOWARM RSSetState", cv[43], (void*)&h_rs, (void**)&o_rs);
     ctx->Release(); dev->Release();
     if (!ok) { log_line("  FX-PSOWARM: D3D11 hooks failed"); return false; }
+    vbring_set_vb_orig((void*)o_vb);
     vsync_set_present_cb(on_present);
     if (!vsync_hook_for_diag()) { log_line("  FX-PSOWARM: Present hook failed"); return false; }
     log_line("  FX-PSOWARM: %u shader/state combinations loaded from %s", g_nrec, g_path);

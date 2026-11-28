@@ -74,7 +74,7 @@ static bool hook_all() {
     HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &dev, nullptr, &ctx);
     if (FAILED(hr) || !dev || !ctx) { log_line("DIAG-D3DHITCH: throwaway device failed 0x%08lX", (unsigned long)hr); return false; }
     void** dv = *(void***)dev; void** cv = *(void***)ctx;
-    bool ok = hook_entry("D3DHITCH CreateBuffer", dv[3], (void*)&h_buf, (void**)&o_buf) &&
+    bool ok = (row_FXVBRING.installed || hook_entry("D3DHITCH CreateBuffer", dv[3], (void*)&h_buf, (void**)&o_buf)) &&
               (row_FXPSOWARM.on || hook_entry("D3DHITCH CreateTexture2D", dv[5], (void*)&h_tex, (void**)&o_tex)) &&
               hook_entry("D3DHITCH CreateSRV", dv[7], (void*)&h_srv, (void**)&o_srv) &&
               (row_FXPSOWARM.on || (hook_entry("D3DHITCH CreateInputLayout", dv[11], (void*)&h_il, (void**)&o_il) &&
@@ -82,7 +82,7 @@ static bool hook_all() {
               hook_entry("D3DHITCH CreatePixelShader", dv[15], (void*)&h_ps, (void**)&o_ps) &&
               hook_entry("D3DHITCH DrawIndexed", cv[12], (void*)&h_dri, (void**)&o_dri) &&
               hook_entry("D3DHITCH Draw", cv[13], (void*)&h_dr, (void**)&o_dr))) &&
-              hook_entry("D3DHITCH Map", cv[14], (void*)&h_map, (void**)&o_map) &&
+              (row_FXVBRING.installed || hook_entry("D3DHITCH Map", cv[14], (void*)&h_map, (void**)&o_map)) &&
               hook_entry("D3DHITCH UpdateSubresource", cv[48], (void*)&h_upd, (void**)&o_upd);
     ctx->Release(); dev->Release();
     log_line("DIAG-D3DHITCH: D3D11 hooks %s", ok ? "on" : "FAILED (partial)");
