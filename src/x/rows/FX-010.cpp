@@ -784,17 +784,22 @@ static void ex_apply(uint8_t* prog) {
     g_ex_words += g_ex_nw;
 }
 
-// FX-010-INTERP (test, default 0; overrides EXTRAP): logic invocations draw particles half a tick behind, between
-// their last two tick states, like SMOOTH draws characters (U 12/10/2026: EXTRAP's half-tick guess flashed twice).
+// FX-010-INTERP (default 1; overrides EXTRAP): particles are drawn one tick behind, between their last two tick
+// states, like SMOOTH draws characters (U 12/10/2026: EXTRAP's half-tick guess flashed twice). Each pass of the logic
+// period draws at pacing_t() = (pass + 1) / N between tick k-1 and tick k, so the motion follows the frame rate at
+// any N (60..240 fps); the last pass draws tick k itself.
 // The real step runs with skip-render set (the engine's own backlog mode: the submits FUN_006458a0 / FUN_00645ba0 and
 // several draw ops return early on DAT_012fb7d0, S), so it advances without drawing; then a paused step draws with
-// every eligible header word at (k-1 + k) / 2, and the words go back. Render-only invocations draw tick k as before.
+// every eligible header word at lerp(k-1, k, t), and the words go back. Render-only invocations do the same on their
+// paused step at their own t.
 // Interpolated values always lie between two real states (no overshoot); words that were ever beyond world scale
 // stay at tick k (BIGREL sticky flag).
-static int  g_interp = 0, g_interp_cfg = 0;
+static int  g_interp = 1, g_interp_cfg = 1;
 static LONG g_ip_parts = 0, g_ip_words = 0, g_ip_lines = 0, g_ip_redraws = 0;
+static int  g_ip_diag = 0;                       // FX-010-INTERP-DIAG=1: log words the steady-motion guard holds (capped)
+static LONG g_ip_rej = 0, g_ip_heads = 0, g_ip_packed = 0; static int g_ip_live = 0;
 
-static void ip_apply(uint8_t* prog) {
+static void ip_apply(uint8_t* prog, float t) {
     g_ex_nw = 0;
     int pi = prog_index(prog);
     if (pi < g_ex_lo || pi > g_ex_hi) return;
@@ -806,14 +811,87 @@ static void ip_apply(uint8_t* prog) {
             if (!e || e->len != len || e->ncur != g_fx_n || e->nprev != g_fx_n - 1) return;
             int32_t ac = *(int32_t*)(e->cur + 0xC), ap = *(int32_t*)(e->prev + 0xC);
             if (ac <= ap || *(int32_t*)(part + 0xC) != ac) return;     // new life, restart, or changed since
+            // Steady motion only: the same particle over three ticks (U 28/11/2026: trails flickered - a trail's
+            // history ring overwrites its oldest point with the newest, and the blend drew that point mid-way).
+            if (e->nprev2 != g_fx_n - 2 || *(int32_t*)(e->prev + 0xC) <= *(int32_t*)(e->prev2 + 0xC)) return;
             DefRate* drate = def_rate(def, false);
             bool any = false;
             for (uint32_t o = 0x10; o < hlen && g_ex_nw < EX_MAXW; o += 4) {
                 if (*(uint32_t*)(e->prev + o) == *(uint32_t*)(e->cur + o)) continue;
                 if (*(uint32_t*)(part + o) != *(uint32_t*)(e->cur + o)) continue;
+                if (o / 4 < 0x800 && g_ex_skipw[o / 4]) continue;
+                {   // Packed pairs (U 28/11/2026: Farplane entrance window, program 12 +0x108/+0x10C/+0x128/+0x12C
+                    // flickered): two 16-bit integers in one word, both halves stepping by small amounts every
+                    // tick (2D4B3237 -> 2E273183 -> 2F0E30C6). Blended as one float they scramble; blend each half.
+                    // A real float moving that fast has random low bits, so it never passes this test.
+                    uint32_t z = *(uint32_t*)(e->prev2 + o), pa = *(uint32_t*)(e->prev + o), pb = *(uint32_t*)(e->cur + o);
+                    int dh0 = (int16_t)((pa >> 16) - (z >> 16)), dh1 = (int16_t)((pb >> 16) - (pa >> 16));
+                    int dl0 = (int16_t)((pa & 0xFFFF) - (z & 0xFFFF)), dl1 = (int16_t)((pb & 0xFFFF) - (pa & 0xFFFF));
+                    auto small = [](int d) { return d != 0 && d > -0x800 && d < 0x800; };
+                    auto steady = [](int d0, int d1) {            // same direction, steps within half of each other
+                        int m = (d0 < 0 ? -d0 : d0) > (d1 < 0 ? -d1 : d1) ? (d0 < 0 ? -d0 : d0) : (d1 < 0 ? -d1 : d1);
+                        int dd = d1 - d0;
+                        return (d0 < 0) == (d1 < 0) && 2 * (dd < 0 ? -dd : dd) <= m;
+                    };
+                    if (small(dh0) && small(dh1) && small(dl0) && small(dl1) && steady(dh0, dh1) && steady(dl0, dl1)) {
+                        int hi = (int)(pa >> 16) + (int)(t * (float)dh1 + (dh1 < 0 ? -0.5f : 0.5f));
+                        int lo = (int)(pa & 0xFFFF) + (int)(t * (float)dl1 + (dl1 < 0 ? -0.5f : 0.5f));
+                        if (g_ex_diag) ex_count(pi, o);
+                        g_ex_rec[g_ex_nw] = part; g_ex_off[g_ex_nw] = o; g_ex_val[g_ex_nw] = pb; g_ex_nw++;
+                        *(uint32_t*)(part + o) = ((uint32_t)(hi & 0xFFFF) << 16) | (uint32_t)(lo & 0xFFFF);
+                        any = true;
+                        InterlockedIncrement(&g_ip_packed);
+                        continue;
+                    }
+                }
                 float a = *(float*)(e->prev + o), b = *(float*)(e->cur + o);
                 if (!floatish(a) || !floatish(b)) continue;
-                if ((a < 0) != (b < 0)) continue;                    // sign flip (angle wrap): hold
+                // sign changes are blended: a cos/sin crossing zero is steady motion; a real wrap (179 -> -179) is a jump
+                {   // a step far larger than the previous tick's (ring overwrite, reset, teleport) is not motion: hold
+                    float z = *(float*)(e->prev2 + o);
+                    if (!floatish(z)) continue;
+                    float d0 = a - z, d1 = b - a;
+                    float ad0 = d0 < 0 ? -d0 : d0, ad1 = d1 < 0 ? -d1 : d1, ab = b < 0 ? -b : b;
+                    bool jump = ad1 > 2.0f * ad0 + 1e-3f * (ab > 1.0f ? ab : 1.0f);
+                    // no reversal rule: a cos/sin turning at its peak reverses smoothly; holding one matrix element
+                    // for that tick bent the Farplane window once per turn (U 28/11/2026)
+                    // Trail head (U 28/11/2026, D FX-010-INTERP-DIAG: field trails append one xyzw point per tick,
+                    // 0x10 apart, toward lower offsets; older points stay put). A slot untouched last tick that is
+                    // written now, next to a slot written last tick and frozen now, is the new head: draw it growing
+                    // out of the previous head at this pass's t, so the trail extends smoothly with its particle.
+                    if (jump && *(uint32_t*)(e->prev2 + o) == *(uint32_t*)(e->prev + o)) {
+                        static const int k_stride[] = {0x10, -0x10, 0xC, -0xC, 0x14, -0x14, 0x18, -0x18, 0x20, -0x20};
+                        int hn = -1;
+                        for (int si = 0; si < 10 && hn < 0; si++) {
+                            int n = (int)o + k_stride[si];
+                            if (n < 0x10 || n + 4 > (int)hlen) continue;
+                            if (*(uint32_t*)(e->prev + n) != *(uint32_t*)(e->prev2 + n) &&
+                                *(uint32_t*)(e->cur + n) == *(uint32_t*)(e->prev + n) &&
+                                floatish(*(float*)(e->cur + n)))
+                                hn = n;
+                        }
+                        if (hn >= 0) {
+                            float h = *(float*)(e->cur + hn);
+                            float x = h + t * (b - h);
+                            if (g_ex_diag) ex_count(pi, o);
+                            g_ex_rec[g_ex_nw] = part; g_ex_off[g_ex_nw] = o; g_ex_val[g_ex_nw] = *(uint32_t*)(e->cur + o); g_ex_nw++;
+                            *(float*)(part + o) = x;
+                            any = true;
+                            InterlockedIncrement(&g_ip_heads);
+                            continue;
+                        }
+                    }
+                    if (jump) {
+                        if (g_ip_diag && InterlockedIncrement(&g_ip_rej) <= 1500)
+                            log_line("FX-010-INTERP-HOLD: %s prog %d part %p age %d +0x%X k-2 %.4f k-1 %.4f k %.4f",
+                                     "jump", pi, part, ac, o, z, a, b);
+                        continue;
+                    }
+                }
+                // Stepped words (state, frame index) change on only some ticks; blended they draw states that never
+                // exist (U 28/11/2026: the Farplane entrance window, program 12 +0x10C/+0x128/+0x12C, flickered;
+                // bisected live). Same bar as EXTRAP: only words that change on ~80% of ticks or more are motion.
+                if (!drate || drate->r[o / 4] < RATE_MIN) continue;
                 if (g_ex_bigrel && drate) {
                     if (drate->big[o / 4]) continue;
                     float ma = a < 0 ? -a : a, mb = b < 0 ? -b : b, mx = ma > mb ? ma : mb, d1 = b - a;
@@ -821,7 +899,7 @@ static void ip_apply(uint8_t* prog) {
                 }
                 if (o / 4 < 0x800 && g_ex_skipw[o / 4]) continue;
                 if (g_ex_diag) ex_count(pi, o);
-                float x = a + 0.5f * (b - a);
+                float x = a + t * (b - a);
                 if ((int)o == g_ex_trace && InterlockedIncrement(&g_ex_trace_n) <= 120)
                     log_line("FX-010-INTERP-TRACE: program %d part %p age %d: +0x%X k-1 %.5f k %.5f -> drawn %.5f",
                              pi, part, ac, o, a, b, x);
@@ -856,6 +934,10 @@ static int __cdecl h_fp_step(void* prog, uint32_t flags) {
         if (g_diag_writes) { wr_snapshot((uint8_t*)prog); g_ph_active = 1; }
         if (g_rollback) rb_save((uint8_t*)prog);
         if (g_extrap && !g_interp && g_psnap) ex_apply((uint8_t*)prog);
+        if (g_interp && g_psnap && pacing_active()) {         // this pass's point between tick k-1 and tick k
+            const float t = pacing_t();
+            if (t < 1.0f) ip_apply((uint8_t*)prog, t);
+        }
         g_kh_paused = g_keyhold ? 1 : 0;
         int r = ppp_step_paused(g_tramp, prog, flags);
         g_kh_paused = 0;
@@ -902,15 +984,17 @@ static int __cdecl h_fp_step(void* prog, uint32_t flags) {
     if (r && g_fd_n) fd_flush(prog, true);
     if (r && g_deferred_n) deferred_flush(prog, true);       // program ended: the field loop frees it now
     if (!r && g_psnap && row_FX010.on && pacing_kind() != INV_BUILD) ex_snapshot((uint8_t*)prog);
-    if (interp && !r) {                                      // draw once, paused, half a tick behind
-        ip_apply((uint8_t*)prog);
+    if (g_diag_submit) diag_step_end(prog, 1);              // under INTERP: submits here leaked past skip-render
+    if (interp && !r) {                                      // draw once, paused, at pass 0's point (1/N of a tick)
+        if (g_diag_submit) diag_step_begin(2);
+        ip_apply((uint8_t*)prog, pacing_t());
         g_kh_paused = g_keyhold ? 1 : 0;
         ppp_step_paused(g_tramp, prog, flags);
         g_kh_paused = 0;
         if (g_ex_nw) ex_restore();
         InterlockedIncrement(&g_ip_redraws);
+        if (g_diag_submit) diag_step_end(prog, 2);
     }
-    if (g_diag_submit) diag_step_end(prog, 1);
     return r;
 }
 
@@ -1112,7 +1196,9 @@ static bool install() {
     g_ex_diag = config_row("FX-010-EXTRAP-DIAG", 0);
     g_ex_unit = config_row("FX-010-EXTRAP-UNIT", 1);
     g_ex_bigrel = config_row("FX-010-EXTRAP-BIGREL", 1);
-    g_interp = config_row("FX-010-INTERP", 0);
+    g_interp = config_row("FX-010-INTERP", 1);
+    g_ip_diag = config_row("FX-010-INTERP-DIAG", 0);
+    g_ip_live = config_row("FX-010-INTERP-LIVE", 0);
     g_interp_cfg = g_interp;
     {
         char t[32];
@@ -1145,7 +1231,7 @@ static bool install() {
     g_psnap = (PSnap*)calloc(PS_N, sizeof(PSnap));
     g_dr = (DefRate*)calloc(NDR, sizeof(DefRate));
     log_line("  FX-010-EXTRAP: %s (%d%% of a tick)%s", g_extrap ? "on" : "off", g_extrap_pct, g_interp ? " - overridden by FX-010-INTERP" : "");
-    if (g_interp) log_line("  FX-010-INTERP: on (logic invocations draw particles half a tick behind; real step under skip-render)");
+    if (g_interp) log_line("  FX-010-INTERP: on (particles drawn between their last two ticks at each pass's point; real step under skip-render)");
     if (g_rollback) log_line("  FX-010: FX-010-ROLLBACK on: paused steps of selected programs leave their records unchanged");
     g_loopdefer = config_row("FX-010-LOOPDEFER", 1) != 0;
     if (g_loopdefer) {
@@ -1579,7 +1665,7 @@ static void ex_hotkey() {                        // dev hotkey Num 7
     if (!dev_key(VK_NUMPAD7, &prev) || !g_psnap) return;
     if (g_interp_cfg) {                          // FX-010-INTERP configured: Num 7 toggles interpolation instead
         g_interp = !g_interp;
-        log_line("Num7: FX-010-INTERP=%d (logic invocations draw particles half a tick behind)", g_interp);
+        log_line("Num7: FX-010-INTERP=%d (particles drawn between their last two ticks)", g_interp);
         return;
     }
     g_extrap = !g_extrap;
@@ -1587,9 +1673,50 @@ static void ex_hotkey() {                        // dev hotkey Num 7
 }
 #endif
 
+// FX-010-INTERP-LIVE=1 (diagnostic): <game>\fps60_fx010.txt is re-read about once a second; lines "interp=0|1" and
+// "progs=a-b" (interpolate only these program slots; "progs=" = all). Lets a bisect run without restarts or keys.
+static void live_poll() {
+    static LONG at = 0; static FILETIME seen = {};
+    if (g_fx_n - at < 30) return;
+    at = g_fx_n;
+    char path[MAX_PATH]; DWORD n = GetModuleFileNameA(nullptr, path, MAX_PATH);
+    while (n && path[n - 1] != 0x5C) n--;           // backslash
+    if (!n || n + 16 > MAX_PATH) return;
+    strcpy_s(path + n, MAX_PATH - n, "fps60_fx010.txt");
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fa)) return;
+    if (CompareFileTime(&fa.ftLastWriteTime, &seen) == 0) return;
+    seen = fa.ftLastWriteTime;
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "r") || !f) return;
+    char line[128];
+    while (fgets(line, sizeof(line), f)) {
+        int v, lo, hi;
+        if (sscanf_s(line, "interp=%d", &v) == 1) g_interp = v ? 1 : 0;
+        else if (strncmp(line, "progs=", 6) == 0) {
+            if (sscanf_s(line + 6, "%d-%d", &lo, &hi) == 2) { g_ex_lo = lo; g_ex_hi = hi; }
+            else if (sscanf_s(line + 6, "%d", &lo) == 1) { g_ex_lo = g_ex_hi = lo; }
+            else { g_ex_lo = 0; g_ex_hi = 0x7FFFFFFF; }
+        }
+        else if (strncmp(line, "skip=", 5) == 0) {            // header word offsets (hex) never blended; "skip=" = none
+            memset(g_ex_skipw, 0, sizeof(g_ex_skipw));
+            for (char* q = line + 5; *q;) {
+                char* e2 = nullptr;
+                unsigned long v = strtoul(q, &e2, 16);
+                if (e2 == q) { q++; continue; }
+                if (v / 4 < 0x800) g_ex_skipw[v / 4] = 1;
+                q = e2;
+            }
+        }
+    }
+    fclose(f);
+    log_line("FX-010-INTERP-LIVE: interp=%d programs %d..%d", g_interp, g_ex_lo, g_ex_hi);
+}
+
 static void pre() {
     if (pacing_kind() != INV_BUILD) g_fx_n++;
     g_fx_n_now = g_fx_n;
+    if (g_ip_live) live_poll();
 #ifdef FPS60_DEV
     ex_hotkey();
     solo_hotkey();
@@ -1618,7 +1745,7 @@ static void pre() {
     }
     if (g_interp && g_ip_parts - g_ip_lines >= 20000) {
         g_ip_lines = g_ip_parts;
-        log_line("FX-010-INTERP: %ld particle draws interpolated, %ld words, %ld program redraws", g_ip_parts, g_ip_words, g_ip_redraws);
+        log_line("FX-010-INTERP: %ld particle draws interpolated, %ld words, %ld program redraws, %ld trail heads, %ld packed pairs", g_ip_parts, g_ip_words, g_ip_redraws, g_ip_heads, g_ip_packed);
     }
     if (g_patched) return;
     g_patched = true;
