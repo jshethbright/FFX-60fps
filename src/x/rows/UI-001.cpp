@@ -16,6 +16,7 @@ static uint8_t* g_out2 = nullptr;     // fade type output
 static const volatile uint32_t* g_capture_pending = nullptr;
 static const uint8_t* g_screen_filter = nullptr;
 static const uint32_t STATE_LEN = 0x58, OUT_LEN = 0x10, OUT2_LEN = 4;
+static constexpr unsigned SLOT_COUNT = 5, SLOT_BASE = 4, SLOT_LEN = 0x10, COUNT_OFFSET = 4;
 static volatile LONG g_held = 0, g_passed = 0;
 static int g_half = 0;                // UI-001-HALF: render-only frames draw the half step (60 Hz promotion)
 
@@ -25,22 +26,27 @@ static overlay_t g_draw_overlay = nullptr;
 static crossfade_t g_draw_crossfade = nullptr;
 
 struct FadeSample {
-    uint8_t state[0x10];
+    uint8_t state[SLOT_LEN];
     float rgba[4];
     int crossfade_alpha;
     bool has_overlay;
     bool has_crossfade;
 };
 
-static FadeSample g_samples[5];
+static FadeSample g_samples[SLOT_COUNT];
 static bool g_record = false;
 static unsigned g_continuing = 0;
 static float g_fraction = 0.0f;
 
+static uint8_t* fade_slot(uint8_t* state, unsigned index) {
+    return state + SLOT_BASE + index * SLOT_LEN;
+}
+
 static FadeSample* fade_sample(const uint8_t* countdown) {
-    const uintptr_t offset = reinterpret_cast<uintptr_t>(countdown) - reinterpret_cast<uintptr_t>(g_state + 0xC);
-    if (offset >= 5 * 0x10 || offset % 0x10 != 0) return nullptr;
-    const unsigned index = static_cast<unsigned>(offset / 0x10);
+    const uintptr_t offset = reinterpret_cast<uintptr_t>(countdown) -
+        reinterpret_cast<uintptr_t>(fade_slot(g_state, 0) + COUNT_OFFSET);
+    if (offset >= SLOT_COUNT * SLOT_LEN || offset % SLOT_LEN != 0) return nullptr;
+    const unsigned index = static_cast<unsigned>(offset / SLOT_LEN);
     return g_record || (g_continuing & (1u << index)) ? &g_samples[index] : nullptr;
 }
 
@@ -52,7 +58,7 @@ static void __cdecl draw_overlay(float r, float g, float b, float a, int mode, c
     // Modes 7 and 8 are immediate filters. They share the native draw call
     // with one fade branch but both must take effect on the same frame.
     FadeSample* sample = mode == 0 ? fade_sample(countdown) : nullptr;
-    if (sample && (countdown[-4] < 2 || countdown[-4] > 6)) sample = nullptr;
+    if (sample && (*(countdown - COUNT_OFFSET) < 2 || *(countdown - COUNT_OFFSET) > 6)) sample = nullptr;
     float rgba[4] = {r, g, b, a};
     if (sample && g_record) {
         memcpy(sample->rgba, rgba, sizeof(rgba));
@@ -120,9 +126,9 @@ uint64_t ui001_screen_filter() {
 // UI-001-HALF: rescale each active slot so the original call draws the midpoint between two logic ticks
 // (the state is restored afterwards). Per-type formulas: docs/fps60/rows/UI-001.md.
 static void half_step() {
-    for (int n = 0; n < 5; n++) {
-        uint8_t* slot = g_state + 8 + n * 0x10;
-        int16_t* c = (int16_t*)(slot + 4);
+    for (unsigned n = 0; n < SLOT_COUNT; ++n) {
+        uint8_t* slot = fade_slot(g_state, n);
+        int16_t* c = (int16_t*)(slot + COUNT_OFFSET);
         int16_t* t = (int16_t*)(slot + 6);
         int16_t* step = (int16_t*)(slot + 0xA);
         if (*c == 0) continue;
@@ -149,7 +155,8 @@ static void __cdecl h_fade() {
         g_record = enabled && smooth && (kind == INV_LOGIC || kind == INV_BACKLOG);
         g_fade();
         if (g_record) {
-            for (int i = 0; i < 5; ++i) memcpy(g_samples[i].state, g_state + 8 + i * 0x10, 0x10);
+            for (unsigned i = 0; i < SLOT_COUNT; ++i)
+                memcpy(g_samples[i].state, fade_slot(g_state, i), SLOT_LEN);
         }
         g_record = false;
         return;
@@ -164,9 +171,9 @@ static void __cdecl h_fade() {
         // render-only frames approach the next native tick without advancing it.
         const int pass = pacing_pass();
         g_fraction = pacing_t() * static_cast<float>(pass) / static_cast<float>(pass + 1);
-        for (int i = 0; i < 5; ++i) {
+        for (unsigned i = 0; i < SLOT_COUNT; ++i) {
             const auto& sample = g_samples[i];
-            if ((sample.has_overlay || sample.has_crossfade) && memcmp(sample.state, s + 8 + i * 0x10, 0x10) == 0)
+            if ((sample.has_overlay || sample.has_crossfade) && memcmp(sample.state, fade_slot(s, i), SLOT_LEN) == 0)
                 g_continuing |= 1u << i;
         }
     }
@@ -215,10 +222,13 @@ static bool install() {
         return false;
     }
     uint32_t mask = *(uint32_t*)(fn + 0x12);
-    uint32_t slots = 0;
-    // MOV ESI,imm32 with imm == mask+8 (slot 0 countdown)
+    uint32_t countdown = 0;
+    // MOV ESI,imm32 points at the first countdown, four bytes into the first slot.
     for (uint32_t i = 0x20; i < 0x200; i++)
-        if (fn[i] == 0xBE && *(uint32_t*)(fn + i + 1) == mask + 8) { slots = mask + 8; break; }
+        if (fn[i] == 0xBE && *(uint32_t*)(fn + i + 1) == mask + SLOT_BASE + COUNT_OFFSET) {
+            countdown = mask + SLOT_BASE + COUNT_OFFSET;
+            break;
+        }
     // MOV [out2],EAX; MOV dword [out],1; FSTP [out+0xC]
     uint32_t out2 = 0, out = 0;
     for (uint32_t i = 0x100; i + 21 <= 0x600; i++) {
@@ -228,9 +238,9 @@ static bool install() {
             out2 = *(uint32_t*)(p + 1); out = *(uint32_t*)(p + 7); break;
         }
     }
-    if (!slots || !out || !out2) {
-        log_line("  UI-001: fade globals not found (mask=0x%08X slots=0x%08X out=0x%08X out2=0x%08X) - refused",
-                 mask, slots, out, out2);
+    if (!countdown || !out || !out2) {
+        log_line("  UI-001: fade globals not found (mask=0x%08X countdown=0x%08X out=0x%08X out2=0x%08X) - refused",
+                 mask, countdown, out, out2);
         return false;
     }
     g_state = (uint8_t*)(uintptr_t)mask;
@@ -253,8 +263,8 @@ static bool install() {
     const uint8_t* filter = sig_find_unique("UI-001 immediate screen filter setter",
         "55 8B EC 8B 4D 14 83 0D ?? ?? ?? ?? 08 C6 05 ?? ?? ?? ?? 07 85 C9 74 2C",
         0x82CC20);
-    if (filter && read_abs(filter + 8) == g_state && read_abs(filter + 15) == g_state + 0x34)
-        g_screen_filter = g_state + 0x34;
+    if (filter && read_abs(filter + 8) == g_state && read_abs(filter + 15) == fade_slot(g_state, 3))
+        g_screen_filter = fade_slot(g_state, 3);
     log_line("  UI-001: CALL at gva=0x%08X -> stub; Sg_ScreenFadeUpdate gva=0x%08X, state gva=0x%08X+0x%X "
              "(expected 0x01300704), outputs gva=0x%08X (0x012FFAE8), 0x%08X (0x00C496D0): render-only invocations draw, state restored; UI-001-HALF=%d",
              rt_to_gva_exe(site), rt_to_gva_exe(fn), rt_to_gva_exe(g_state), STATE_LEN, rt_to_gva_exe(g_out), rt_to_gva_exe(g_out2), g_half);
