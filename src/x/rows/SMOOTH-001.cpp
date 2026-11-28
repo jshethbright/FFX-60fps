@@ -121,6 +121,104 @@ static LONG  g_logic_calls = 0, g_skip_hist = 0;
 
 static int src_tag() { return *g_src3 ? 3 : (*g_src2 ? 2 : 1); }
 
+// Some field rooms keep a fixed view matrix and pan the projected image vertically
+// to follow the player. Ch_DrawMain updates that separate renderer offset.
+using field_pan_t = void (__cdecl*)(const float*);
+static field_pan_t g_field_pan = nullptr;
+static uint8_t* const* g_pan_renderer = nullptr;
+static const uint8_t* g_pan_blocked = nullptr;
+static constexpr uint32_t k_pan_offset = 0xF9BC;
+static constexpr uint32_t k_pan_enabled = 0xF9C4;
+static constexpr uint32_t k_pan_scene = 0xFAF4;
+static constexpr float k_pan_cut = 0.05f;
+
+struct PanSample {
+    uint8_t* renderer;
+    uint32_t scene;
+    float offset;
+};
+
+static PanSample g_pan_last{}, g_pan_prev{}, g_pan_pending{}, g_pan_original{};
+static float g_pan_drawn = 0;
+
+static float& pan_offset(uint8_t* renderer) {
+    return *reinterpret_cast<float*>(renderer + k_pan_offset);
+}
+
+static void restore_pan() {
+    if (g_pan_original.renderer) {
+        uint8_t* renderer = *g_pan_renderer;
+        if (renderer == g_pan_original.renderer && pan_offset(renderer) == g_pan_drawn)
+            pan_offset(renderer) = g_pan_original.offset;
+        g_pan_original = {};
+    }
+}
+
+static PanSample current_pan() {
+    uint8_t* renderer = *g_pan_renderer;
+    if (!renderer || *g_pan_blocked || !renderer[k_pan_enabled] || !*g_src3 || *g_src2 != 0)
+        return {};
+    return {renderer, *reinterpret_cast<uint32_t*>(renderer + k_pan_scene), pan_offset(renderer)};
+}
+
+static bool same_pan_scene(const PanSample& a, const PanSample& b) {
+    return a.renderer && a.renderer == b.renderer && a.scene == b.scene;
+}
+
+static void draw_pan(const PanSample& from, const PanSample& current) {
+    const float t = pacing_t();
+    const float step = current.offset - from.offset;
+    if (!same_pan_scene(from, current) || !(fabsf(step) < k_pan_cut) ||
+        step == 0.0f || t >= 1.0f || g_draw_cut || ui001_frame_capture_pending()) return;
+    g_pan_original = current;
+    g_pan_drawn = from.offset + t * step;
+    pan_offset(current.renderer) = g_pan_drawn;
+}
+
+static void draw_build_pan(const PanSample& current) {
+    if (same_pan_scene(current, g_pan_prev) && current.offset == g_pan_prev.offset)
+        draw_pan(g_pan_last, current);
+}
+
+static void __cdecl h_field_pan(const float* target) {
+    // There can be one call per actor. Each native call sees the canonical offset.
+    __try { restore_pan(); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("SMOOTH-001 field pan restore", GetExceptionCode()); }
+    g_field_pan(target);
+    if (g_disabled || g_kind == INV_STOCK || !smooth_live(1)) return;
+    __try {
+        const PanSample current = current_pan();
+        if (g_kind == INV_LOGIC || g_kind == INV_BACKLOG) {
+            g_pan_pending = current;
+            draw_pan(g_pan_prev, current);
+        } else if (g_kind == INV_BUILD) {
+            draw_build_pan(current);
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("SMOOTH-001 field pan", GetExceptionCode()); }
+}
+
+static void install_field_pan() {
+    uint8_t* site = sig_find_unique("SMOOTH-001 field pan (Ch_DrawMain)",
+        "D9 E8 8D 45 DC D9 5D E8 50 E8 ?? ?? ?? ?? 83 C4 14 B9 B2 10 00 00", 0x82EE81);
+    if (!site) return;
+    site += 9;
+    uint8_t* wrapper = call_target(site);
+    if (!sig_match(wrapper, "55 8B EC FF 75 08 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 5D C3")) return;
+    uint8_t* update = call_target(wrapper + 12);
+    if (!sig_match(update, "55 8B EC 83 EC 08 53 8B D9 8B 83 F4 FA 00 00") ||
+        !sig_match(update + 0xE0, "80 BB C4 F9 00 00 00 74 ?? 80 3D ?? ?? ?? ?? 00") ||
+        !sig_match(update + 0x179, "D9 93 BC F9 00 00")) return;
+    g_pan_renderer = reinterpret_cast<uint8_t* const*>(read_abs(wrapper + 8));
+    g_pan_blocked = read_abs(update + 0xEB);
+    g_field_pan = reinterpret_cast<field_pan_t>(wrapper);
+    if (!patch_call_rel32(site, wrapper, (void*)&h_field_pan)) {
+        g_field_pan = nullptr;
+        return;
+    }
+    log_line("  SMOOTH-001: field vertical pan interpolation installed");
+}
+
 static void write_view(const float* out, int tag) {
     memcpy(g_orig, g_view, 64);
     memcpy(g_out, out, 64);
@@ -223,7 +321,11 @@ static int __cdecl h_finalize(int vp) {
     float built[16];
     if (tracing) __try { memcpy(built, g_view, 64); } __except (EXCEPTION_EXECUTE_HANDLER) { tracing = false; }
     g_tr_ours = g_tr_wrote = false;
-    __try { on_call(vp); }
+    __try {
+        on_call(vp);
+        if (vp == 0 && g_field_pan && g_kind == INV_BUILD && smooth_live(1) && !g_pan_original.renderer)
+            draw_build_pan(current_pan());
+    }
     __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("SMOOTH-001 finalize stub", GetExceptionCode()); }
     if (tracing && InterlockedDecrement(&g_trace_left) >= 0) {
         __try {
@@ -279,10 +381,12 @@ static void restore() {
 static void pre() {
     smooth_poll_hotkey();
     trace_poll();
-    __try { restore(); }
+    __try { restore(); restore_pan(); }
     __except (EXCEPTION_EXECUTE_HANDLER) { on_fault("SMOOTH-001 restore", GetExceptionCode()); }
     g_kind = g_disabled ? INV_STOCK : pacing_kind();
     g_draw_cut = false;
+    g_pan_pending = {};
+    if (g_kind == INV_STOCK || !smooth_live(1)) g_pan_last = g_pan_prev = {};
     g_blk_first = true;
     for (int i = 0; i < 3; i++) {
         g_h[i].has_pend = false;
@@ -293,6 +397,8 @@ static void pre() {
 
 static void post() {
     if (g_kind == INV_LOGIC || g_kind == INV_BACKLOG) {
+        g_pan_last = g_draw_cut || ui001_frame_capture_pending() ? PanSample{} : g_pan_prev;
+        g_pan_prev = g_pan_pending;
         for (int i = 0; i < 3; i++) {
             CamHist& h = g_h[i];
             if (!h.has_pend) {                            // viewport not drawn this tick: history broken
@@ -401,6 +507,7 @@ static bool install() {
             return false;
         }
     }
+    install_field_pan();
     if (g_trace && !g_camlog) {
         if (!hook_entry("SMOOTH-001 commit", commit, (void*)&h_commit, (void**)&g_commit_tramp))
             log_line("  SMOOTH-001: TRACE commit hook failed - finalize lines only");
