@@ -69,6 +69,8 @@ static LONG    g_scan_gen = -1;
 static uint32_t g_nwarm = 0, g_nloaded = 0, g_nnew = 0;
 static double  g_warm_ms = 0;
 static char    g_path[MAX_PATH];
+static ID3D11DeviceContext* g_imm = nullptr;
+static ID3D11Device* g_dev = nullptr;
 
 // ---------------------------------------------------------------- device hooks (any thread)
 typedef HRESULT(STDMETHODCALLTYPE* csh_t)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, void**);
@@ -84,34 +86,98 @@ static void note_obj(IUnknown* o, uint64_t h) {
     LeaveCriticalSection(&g_cs);
     InterlockedIncrement(&g_shaders);
 }
+// FX-PSOWARM-REUSE (default 1): the game creates the same shaders again for every model it loads (D 28/11/2026:
+// 6459 shader/layout creations of a few hundred distinct ones in a session). The driver compiles at creation under
+// its device lock, so the render thread's Map/Present waited 20-40 ms behind the loader thread. A create with the
+// bytecode of a live object returns that object (shaders and layouts are immutable).
+static int g_reuse = 1;
+static volatile LONG g_reused = 0;
+static bool reuse(uint64_t h, void** c) {
+    if (!g_reuse || !c) return false;
+    uint64_t v = 0;
+    EnterCriticalSection(&g_cs);
+    bool ok = map_get(g_hash2obj, h, &v) && v;
+    if (ok) ((IUnknown*)(uintptr_t)v)->AddRef();
+    LeaveCriticalSection(&g_cs);
+    if (ok) { *c = (void*)(uintptr_t)v; InterlockedIncrement(&g_reused); }
+    return ok;
+}
 static HRESULT STDMETHODCALLTYPE h_cvs(ID3D11Device* d, const void* b, SIZE_T l, ID3D11ClassLinkage* k, void** c) {
+    uint64_t h = b ? fnv(b, l, 0x5653) : 0;
+    if (b && !k && reuse(h, c)) return S_OK;
     HRESULT r = o_cvs(d, b, l, k, c);
-    if (SUCCEEDED(r) && c && *c && b) note_obj((IUnknown*)*c, fnv(b, l, 0x5653));
+    if (SUCCEEDED(r) && c && *c && b) note_obj((IUnknown*)*c, h);
     return r;
 }
 static HRESULT STDMETHODCALLTYPE h_cps(ID3D11Device* d, const void* b, SIZE_T l, ID3D11ClassLinkage* k, void** c) {
+    uint64_t h = b ? fnv(b, l, 0x5053) : 0;
+    if (b && !k && reuse(h, c)) return S_OK;
     HRESULT r = o_cps(d, b, l, k, c);
-    if (SUCCEEDED(r) && c && *c && b) note_obj((IUnknown*)*c, fnv(b, l, 0x5053));
+    if (SUCCEEDED(r) && c && *c && b) note_obj((IUnknown*)*c, h);
     return r;
 }
 static HRESULT STDMETHODCALLTYPE h_cil(ID3D11Device* d, const D3D11_INPUT_ELEMENT_DESC* e, UINT n, const void* b, SIZE_T l, ID3D11InputLayout** c) {
-    HRESULT r = o_cil(d, e, n, b, l, c);
-    if (SUCCEEDED(r) && c && *c && e) {
-        uint64_t h = fnv(b, l, 0x494C);
-        for (UINT i = 0; i < n; i++) {
-            if (e[i].SemanticName) h = fnv(e[i].SemanticName, strlen(e[i].SemanticName), h);
-            uint32_t w[6] = { e[i].SemanticIndex, (uint32_t)e[i].Format, e[i].InputSlot, e[i].AlignedByteOffset,
-                              (uint32_t)e[i].InputSlotClass, e[i].InstanceDataStepRate };
-            h = fnv(w, sizeof(w), h);
-        }
-        note_obj(*c, h);
+    uint64_t h = fnv(b, l, 0x494C);
+    for (UINT i = 0; e && i < n; i++) {
+        if (e[i].SemanticName) h = fnv(e[i].SemanticName, strlen(e[i].SemanticName), h);
+        uint32_t w[6] = { e[i].SemanticIndex, (uint32_t)e[i].Format, e[i].InputSlot, e[i].AlignedByteOffset,
+                          (uint32_t)e[i].InputSlotClass, e[i].InstanceDataStepRate };
+        h = fnv(w, sizeof(w), h);
     }
+    if (e && b && reuse(h, (void**)c)) return S_OK;
+    HRESULT r = o_cil(d, e, n, b, l, c);
+    if (SUCCEEDED(r) && c && *c && e) note_obj(*c, h);
     return r;
 }
 
+// ---------------------------------------------------------------- texture touch (FX-PSOWARM-TOUCH, default 1)
+// D 28/11/2026 (DIAG-D3DHITCH): hitch frames have the same uploads and draws as normal ones but GPU frames of 30-50 ms,
+// and the game's 12 MB dynamic vertex buffer Map(DISCARD) waits 5-40 ms behind them; nothing is created in those
+// frames. Textures are created on the loader thread earlier; the driver finishes their placement the first time a
+// frame uses them. Each new texture is queued and a 4x4 corner of it copied into a scratch texture on the render
+// thread before Present, a few per frame, so that work happens before the model is drawn.
+typedef HRESULT(STDMETHODCALLTYPE* ctex_t)(ID3D11Device*, const D3D11_TEXTURE2D_DESC*, const D3D11_SUBRESOURCE_DATA*, ID3D11Texture2D**);
+static ctex_t o_ctex;
+static int g_touch = 1;
+enum { TQ = 4096 };
+static ID3D11Texture2D* g_tq[TQ];
+static volatile LONG g_tq_w = 0;
+static LONG g_tq_r = 0;
+static volatile LONG g_touched = 0, g_tq_drop = 0;
+static HRESULT STDMETHODCALLTYPE h_ctex(ID3D11Device* d, const D3D11_TEXTURE2D_DESC* td, const D3D11_SUBRESOURCE_DATA* init, ID3D11Texture2D** out) {
+    HRESULT r = o_ctex(d, td, init, out);
+    if (g_touch && SUCCEEDED(r) && out && *out && td && init && td->SampleDesc.Count <= 1 &&
+        (td->Usage == D3D11_USAGE_DEFAULT || td->Usage == D3D11_USAGE_IMMUTABLE) && (td->BindFlags & D3D11_BIND_SHADER_RESOURCE)) {
+        EnterCriticalSection(&g_cs);
+        if (g_tq_w - g_tq_r < TQ) { (*out)->AddRef(); g_tq[g_tq_w % TQ] = *out; g_tq_w++; }
+        else g_tq_drop++;
+        LeaveCriticalSection(&g_cs);
+    }
+    return r;
+}
+struct Scratch { DXGI_FORMAT f; ID3D11Texture2D* t; };
+static Scratch g_scr[64]; static int g_nscr = 0;
+static ID3D11Texture2D* scratch_for(DXGI_FORMAT f);
+static void touch_some(double budget_ms, double (*now)()) {
+    double t0 = now();
+    for (int n = 0; n < 64 && now() - t0 < budget_ms; n++) {
+        ID3D11Texture2D* t = nullptr;
+        EnterCriticalSection(&g_cs);
+        if (g_tq_r < g_tq_w) { t = g_tq[g_tq_r % TQ]; g_tq_r++; }
+        LeaveCriticalSection(&g_cs);
+        if (!t) return;
+        D3D11_TEXTURE2D_DESC td; t->GetDesc(&td);
+        ID3D11Texture2D* s = scratch_for(td.Format);
+        if (s && td.Width >= 4 && td.Height >= 4) {
+            D3D11_BOX b = { 0, 0, 0, 4, 4, 1 };
+            g_imm->CopySubresourceRegion(s, 0, 0, 0, 0, t, 0, &b);
+            g_touched++;
+        }
+        t->Release();
+    }
+}
+
 // ---------------------------------------------------------------- context state tracking (render thread)
-static ID3D11DeviceContext* g_imm = nullptr;
-static ID3D11Device* g_dev = nullptr;
 static bool g_warming = false;
 struct Cur {
     void *vs, *ps, *gs, *il, *blend, *ds, *rs;
@@ -209,6 +275,17 @@ static void STDMETHODCALLTYPE h_dr(ID3D11DeviceContext* c, UINT a, UINT b) { on_
 static void STDMETHODCALLTYPE h_drii(ID3D11DeviceContext* c, UINT a, UINT b, UINT d, INT e, UINT f) { on_draw(c); o_drii(c, a, b, d, e, f); }
 static void STDMETHODCALLTYPE h_dri2(ID3D11DeviceContext* c, UINT a, UINT b, UINT d, UINT e) { on_draw(c); o_dri2(c, a, b, d, e); }
 
+static ID3D11Texture2D* scratch_for(DXGI_FORMAT f) {
+    for (int i = 0; i < g_nscr; i++) if (g_scr[i].f == f) return g_scr[i].t;
+    if (g_nscr >= 64) return nullptr;
+    D3D11_TEXTURE2D_DESC td = {};
+    td.Width = td.Height = 4; td.MipLevels = td.ArraySize = 1; td.Format = f; td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_DEFAULT;
+    ID3D11Texture2D* t = nullptr;
+    g_dev->CreateTexture2D(&td, nullptr, &t);       // through o_ctex? no: g_dev->CreateTexture2D is hooked, no init data -> not queued
+    g_scr[g_nscr++] = { f, t };
+    return t;
+}
+
 // ---------------------------------------------------------------- warm-up (render thread, before Present)
 static ID3DDeviceContextState* g_state = nullptr;
 static ID3D11DeviceContext1* g_ctx1 = nullptr;
@@ -302,18 +379,21 @@ static bool setup(IDXGISwapChain* sc) {
     return true;
 }
 
+void d3dhitch_present(void* dev, void* ctx);   // DIAG-D3DHITCH GPU timing
 static void on_present(void* scv) {
     if (!row_FXPSOWARM.on || g_disabled) return;
     static bool tried = false;
     if (!tried) { tried = true; if (!setup((IDXGISwapChain*)scv)) return; }
     if (!g_imm) return;
+    d3dhitch_present(g_dev, g_imm);
     static uint32_t frames = 0;
     if (++frames % 600 == 0) {
         save();
         if (g_nwarm || g_nnew)
-            log_line("FX-PSOWARM: %u combinations known (%u from the file, %u new this session), %u warmed in %.0f ms, %ld shaders/layouts seen",
-                     g_nrec, g_nloaded, g_nnew, g_nwarm, g_warm_ms, g_shaders);
+            log_line("FX-PSOWARM: %u combinations known (%u from the file, %u new this session), %u warmed in %.0f ms, %ld shaders/layouts created, %ld creates reused; textures touched %ld, queued %ld, dropped %ld",
+                     g_nrec, g_nloaded, g_nnew, g_nwarm, g_warm_ms, g_shaders, g_reused, g_touched, g_tq_w - g_tq_r, g_tq_drop);
     }
+    if (g_touch) __try { touch_some(1.5, now_ms); } __except (EXCEPTION_EXECUTE_HANDLER) { g_touch = 0; log_line("FX-PSOWARM: fault touching textures - touch off"); }
     if (!g_state || !g_ctx1 || !g_vbuf) return;
     LONG gen = g_shaders;
     if (gen == g_scan_gen && g_cursor >= g_nrec) return;   // nothing new to try
@@ -361,6 +441,8 @@ static void load() {
 
 static bool install() {
     QueryPerformanceFrequency(&g_qpf);
+    g_reuse = config_row("FX-PSOWARM-REUSE", 1);
+    g_touch = config_row("FX-PSOWARM-TOUCH", 1);
     InitializeCriticalSection(&g_cs);
     g_recs = (Pso*)calloc(MAX_RECS, sizeof(Pso));
     g_warmed = (uint8_t*)calloc(MAX_RECS, 1);
@@ -376,7 +458,8 @@ static bool install() {
     HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &dev, nullptr, &ctx);
     if (FAILED(hr) || !dev || !ctx) { log_line("  FX-PSOWARM: throwaway device failed 0x%08lX", (unsigned long)hr); return false; }
     void** dv = *(void***)dev; void** cv = *(void***)ctx;
-    bool ok = hook_entry("FX-PSOWARM CreateVertexShader", dv[12], (void*)&h_cvs, (void**)&o_cvs) &&
+    bool ok = hook_entry("FX-PSOWARM CreateTexture2D", dv[5], (void*)&h_ctex, (void**)&o_ctex) &&
+              hook_entry("FX-PSOWARM CreateVertexShader", dv[12], (void*)&h_cvs, (void**)&o_cvs) &&
               hook_entry("FX-PSOWARM CreatePixelShader", dv[15], (void*)&h_cps, (void**)&o_cps) &&
               hook_entry("FX-PSOWARM CreateInputLayout", dv[11], (void*)&h_cil, (void**)&o_cil) &&
               hook_entry("FX-PSOWARM PSSetShader", cv[9], (void*)&h_pss, (void**)&o_pss) &&
