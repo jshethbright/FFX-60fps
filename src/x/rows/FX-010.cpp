@@ -629,7 +629,9 @@ template <class F> static void for_particles(uint8_t* prog, F fn) {
 // How often each header word changes per tick, per group def (EMA, 255 = every tick). Moving parts change on every
 // tick; a stepped word (+0x12C of the Echuilles rays, ~30% of ticks) never reaches the bar, so it is never moved.
 struct DefRate { uint8_t* def; LONG seen; uint8_t r[0x800]; uint8_t big[0x800]; uint8_t packed[0x800]; };   // big: word was ever > BIG_MAG; packed: ever a 16-bit pair
-enum { NDR = 64, RATE_MIN = 200 };
+// NDR: the Farplane entrance runs 13 programs with up to 8 group defs each; 64 slots thrashed, every reused slot restarted
+// at rate 0 and INTERP held its words (U 28/11/2026: pyrefly brightness/opacity at 30 Hz).
+enum { NDR = 512, RATE_MIN = 200 };
 static bool floatish(float x);
 static const float BIG_MAG = 4096.0f;              // beyond field world scale: not geometry
 static DefRate* g_dr = nullptr;
@@ -798,7 +800,11 @@ static void ex_apply(uint8_t* prog) {
 static int  g_interp = 1, g_interp_cfg = 1;
 static LONG g_ip_parts = 0, g_ip_words = 0, g_ip_lines = 0, g_ip_redraws = 0;
 static int  g_ip_diag = 0;                       // FX-010-INTERP-DIAG=1: log words the steady-motion guard holds (capped)
-static LONG g_ip_rej = 0, g_ip_heads = 0, g_ip_packed = 0; static int g_ip_live = 0;
+static LONG g_ip_rej = 0, g_ip_heads = 0, g_ip_packed = 0;
+// FX-010-INTERP-BIGREL (default 0): hold words ever beyond world scale, as EXTRAP does. Off: a blend never leaves the
+// two real tick values, and the sticky flag held pyrefly position words, so they drifted within a tick and snapped
+// back at the next (U 28/11/2026: back-and-forth at 30 Hz, gone with it off).
+static int  g_ip_bigrel = 0; static int g_ip_live = 0;
 
 static void ip_apply(uint8_t* prog, float t) {
     g_ex_nw = 0;
@@ -899,7 +905,7 @@ static void ip_apply(uint8_t* prog, float t) {
                 // exist (U 28/11/2026: the Farplane entrance window, program 12 +0x10C/+0x128/+0x12C, flickered;
                 // bisected live). Same bar as EXTRAP: only words that change on ~80% of ticks or more are motion.
                 if (!drate || drate->r[o / 4] < RATE_MIN) continue;
-                if (g_ex_bigrel && drate) {
+                if (g_ip_bigrel && drate) {
                     if (drate->big[o / 4]) continue;
                     float ma = a < 0 ? -a : a, mb = b < 0 ? -b : b, mx = ma > mb ? ma : mb, d1 = b - a;
                     if (mx > 1000.0f && (d1 < 0 ? -d1 : d1) > 0.2f * mx) continue;
@@ -1205,6 +1211,7 @@ static bool install() {
     g_ex_bigrel = config_row("FX-010-EXTRAP-BIGREL", 1);
     g_interp = config_row("FX-010-INTERP", 1);
     g_ip_diag = config_row("FX-010-INTERP-DIAG", 0);
+    g_ip_bigrel = config_row("FX-010-INTERP-BIGREL", 0);
     g_ip_live = config_row("FX-010-INTERP-LIVE", 0);
     g_interp_cfg = g_interp;
     {
