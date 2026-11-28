@@ -8,7 +8,7 @@
 
 enum { MAX_MODS = 8, MAX_SECS = 4, MAX_VARS = 8, TABLE_LEN = 0x1000, NSLOT = TABLE_LEN / 4, MAX_NEW = 32 };
 
-struct Sec { uint8_t* p; uint32_t len; uint8_t* buf; };
+struct Sec { uint8_t* p; uint32_t len; uint8_t* buf; uint8_t* prev; };   // prev: MAG-021-INTERP, the state one tick before buf
 struct Mod {
     uint8_t*  base;              // null = free slot
     uint32_t  size;
@@ -23,8 +23,14 @@ struct Mod {
     int       nvars;
     uint32_t  logic_seen;        // logic invocations since load
     bool      in_window;
+    uint32_t  snap_tick;         // MAG-021-INTERP: logic tick of the state in buf
+    bool      prev_ok;           // prev holds the tick before snap_tick
+    bool      other;             // MAG-021-OTHER: not family E (summons), always blended
 };
 static Mod g_mods[MAX_MODS];
+static int  g_interp = 0;   // default 0: 0 words qualified in a Fire test (U 28/11/2026: Fire looks fine as is)
+static uint32_t g_logic_tick = 0;
+static int g_other = 1;                     // MAG-021-OTHER (see blend_window)
 
 static uint32_t* g_table = nullptr;          // service table (0x00C64CE8)
 static uint32_t* g_shadow = nullptr;
@@ -196,7 +202,10 @@ static void on_unload(uint8_t* base) {
 }
 
 static void free_mod(Mod& m) {
-    for (int k = 0; k < m.nsec; k++) if (m.sec[k].buf) VirtualFree(m.sec[k].buf, 0, MEM_RELEASE);
+    for (int k = 0; k < m.nsec; k++) {
+        if (m.sec[k].buf) VirtualFree(m.sec[k].buf, 0, MEM_RELEASE);
+        if (m.sec[k].prev) VirtualFree(m.sec[k].prev, 0, MEM_RELEASE);
+    }
     memset(&m, 0, sizeof(m));
 }
 
@@ -224,7 +233,11 @@ static bool skipped(const char* name) {
 static void scan(Mod& m) {
     m.scanned = true;
     if (skipped(m.name)) { log_line("MAG-021: %s in MAG-021-SKIP - not replayed", m.name); return; }
-    if (famE_find_setter(m.base, m.size, nullptr) != 1) return;   // not family E (this shape)
+    if (famE_find_setter(m.base, m.size, nullptr) != 1) {          // not family E (this shape)
+        if (!g_other || !strstr(m.name, "magic_")) return;
+        m.other = true;
+        log_line("MAG-021-OTHER: %s is not family E - replayed and blended on render-only frames", m.name);
+    }
     IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)m.base;
     IMAGE_NT_HEADERS32* nt = (IMAGE_NT_HEADERS32*)(m.base + dos->e_lfanew);
     IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
@@ -238,7 +251,8 @@ static void scan(Mod& m) {
         s.p = m.base + sec[i].VirtualAddress;
         s.len = len;
         s.buf = (uint8_t*)VirtualAlloc(nullptr, len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        if (!s.buf) { log_line("MAG-021: %s no memory for 0x%X bytes - not handled", m.name, len); return; }
+        s.prev = (uint8_t*)VirtualAlloc(nullptr, len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (!s.buf || !s.prev) { log_line("MAG-021: %s no memory for 0x%X bytes - not handled", m.name, len); return; }
         m.total += len;
     }
     if (!m.nsec) { log_line("MAG-021: %s family E but no writable section - not handled", m.name); return; }
@@ -279,7 +293,31 @@ static bool owns(const void* p) {
 }
 
 // ---------------------------------------------------------------- update replay (MAG-008 hook)
+// MAG-021-OTHER modules open their window only here, when their update is about to be replayed (U 28/11/2026:
+// opening them in pre() restored a field-loaded DLL every render-only frame - heavy artifacts after a save load).
+static bool g_other_ready = false;
+static void open_mod(Mod& m) {
+    if ((g_interp || m.other) && m.snap_tick != g_logic_tick) {
+        m.prev_ok = m.snap_tick + 1 == g_logic_tick;
+        for (int k = 0; k < m.nsec; k++) memcpy(m.sec[k].prev, m.sec[k].buf, m.sec[k].len);
+        m.snap_tick = g_logic_tick;
+    }
+    bool ok = true;
+    for (int k = 0; k < m.nsec && ok; k++) ok = safe_copy(m.sec[k].buf, m.sec[k].p, m.sec[k].len);
+    if (!ok) { log_line("MAG-021: %s snapshot faulted - module dropped", m.name); m.ok = false; return; }
+    for (int v = 0; v < m.nvars; v++) *m.vars[v] = (uint32_t)(uintptr_t)g_shadow;
+    m.in_window = true;
+    if (!g_window) { g_window = true; g_windows++; g_phase = 1; }
+}
+static void open_other(const void* p) {
+    for (int i = 0; i < MAX_MODS; i++) {
+        Mod& m = g_mods[i];
+        if (m.base && m.ok && m.other && !m.in_window && m.logic_seen >= 2 &&
+            (const uint8_t*)p >= m.base && (const uint8_t*)p < m.base + m.size) { open_mod(m); return; }
+    }
+}
 static void run_update(uint8_t* ov) {
+    if (g_other_ready && ov) open_other(ov);
     if (!ov || !owns(ov)) return;
     ov_fn_t fn = *(ov_fn_t*)(ov + 0xC);
     if (!owns((void*)fn)) return;
@@ -291,8 +329,52 @@ static void run_update(uint8_t* ov) {
     g_updates++;
 }
 
+// MAG-021-INTERP (default 1): the replay leaves the DLL at tick k+1 while buf holds tick k, so render-only frames drew
+// k+1 outright: the effect led by a tick and moved in 30 Hz steps (U 28/11/2026: Fire juddered at 120 fps). Each
+// float word the update changed is drawn at k + f (k+1 - k), f = pass / N, when it moved steadily over the last
+// two ticks (prev = k-1); other words draw k+1 as before. buf goes back at the restore, so nothing is kept.
+// MAG-021-OTHER (default 1): other magic DLLs too (U 28/11/2026: summon choreography at 30 Hz under MAG-008;
+// MAG-008 off live made it run fast). Their windows always blend (k + f (k+1 - k)), as replaying alone draws k+1.
+static LONG g_ip_words = 0, g_ip_windows = 0;
+static bool ip_floatish(float x) { float a = x < 0 ? -x : x; return x == 0.0f || (a >= 1e-4f && a <= 1e6f); }
+static void blend_window() {
+    int n = rate_mult();
+    if (n < 2) return;
+    float f = (float)pacing_pass() / (float)n;
+    if (f <= 0.0f || f >= 1.0f) return;
+    for (int i = 0; i < MAX_MODS; i++) {
+        Mod& m = g_mods[i];
+        if (!m.base || !m.in_window || !m.prev_ok || !(g_interp || m.other)) continue;
+        LONG words = 0;
+        for (int k = 0; k < m.nsec; k++) {
+            const Sec& sc = m.sec[k];
+            uint32_t* live = (uint32_t*)sc.p;
+            const uint32_t* cur = (const uint32_t*)sc.buf;
+            const uint32_t* old = (const uint32_t*)sc.prev;
+            uint32_t nw = sc.len / 4;
+            for (uint32_t w = 0; w < nw; w++) {
+                uint32_t bv = live[w], av = cur[w];
+                if (bv == av) continue;
+                uint32_t zv = old[w];
+                if (zv == av) continue;                          // did not move last tick: stepped or just set
+                float b = *(float*)&bv, a = *(float*)&av, z = *(float*)&zv;
+                if (!ip_floatish(a) || !ip_floatish(b) || !ip_floatish(z)) continue;
+                float d0 = a - z, d1 = b - a;
+                float ad0 = d0 < 0 ? -d0 : d0, ad1 = d1 < 0 ? -d1 : d1, ab = b < 0 ? -b : b;
+                if (ad1 > 2.0f * ad0 + 1e-3f * (ab > 1.0f ? ab : 1.0f)) continue;   // jump: not motion
+                float x = a + f * d1;
+                live[w] = *(uint32_t*)&x;
+                words++;
+            }
+        }
+        g_ip_words += words;
+    }
+    g_ip_windows++;
+    if (g_ip_windows % 600 == 0) log_line("MAG-021-INTERP: %ld windows blended, %ld words so far", g_ip_windows, g_ip_words);
+}
+
 static void build_hook() {
-    if (!g_window || g_broken || g_disabled) return;
+    if (!(g_window || g_other_ready) || g_broken || g_disabled) return;
     __try {
         if (g_f_count()) {
             for (int i = 0; i < 0x1F; i++) {
@@ -303,6 +385,7 @@ static void build_hook() {
         }
         uint8_t st = *g_st_3364;
         if (st == 4 || st == 5) run_update(*g_ov_3360);
+        blend_window();
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
         *g_cur_flag = 0;
@@ -385,6 +468,9 @@ static bool install() {
     if (!g_shadow || !g_thunks) return false;
     build_thunks();
     config_str("rows", "MAG-021-SKIP", g_skip, sizeof(g_skip), "0573");
+    g_interp = config_row("MAG-021-INTERP", 0);
+    g_other = config_row("MAG-021-OTHER", 1);
+    log_line("  MAG-021-INTERP: %s (render-only frames draw each steady float word between tick k and the replayed k+1)", g_interp ? "on" : "off");
     log_line("  MAG-021: not replayed (MAG-021-SKIP): %s", g_skip[0] ? g_skip : "none");
     QueryPerformanceFrequency(&g_qpf);
     if (!magic_mods_subscribe("MAG-021", on_load, on_unload)) return false;
@@ -399,9 +485,11 @@ static void restore_pending();
 static void pre() {
     restore_pending();                           // previous render-only window (see post())
     g_window = false;
+    g_other_ready = false;
     g_phase = 0;
     g_nnew = 0;
     bool build = pacing_kind() == INV_BUILD;
+    if (!build) g_logic_tick++;
     bool any = false;
     for (int i = 0; i < MAX_MODS; i++) {
         Mod& m = g_mods[i];
@@ -418,6 +506,7 @@ static void pre() {
             }
             if (!m.ok) continue;
             if (m.logic_seen < 2 || g_disabled || g_broken) continue;
+            if (m.other) g_other_ready = true;
             any = true;
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -435,8 +524,13 @@ static void pre() {
     g_rng_save[2] = *(uint32_t*)g_rng_c;
     for (int i = 0; i < MAX_MODS; i++) {
         Mod& m = g_mods[i];
-        if (!m.base || !m.ok || m.logic_seen < 2) continue;
+        if (!m.base || !m.ok || m.logic_seen < 2 || m.other) continue;
         bool ok = true;
+        if ((g_interp || m.other) && m.snap_tick != g_logic_tick) {          // first window of this tick: buf (last tick) becomes prev
+            m.prev_ok = m.snap_tick + 1 == g_logic_tick;
+            for (int k = 0; k < m.nsec; k++) memcpy(m.sec[k].prev, m.sec[k].buf, m.sec[k].len);
+            m.snap_tick = g_logic_tick;
+        }
         for (int k = 0; k < m.nsec && ok; k++) ok = safe_copy(m.sec[k].buf, m.sec[k].p, m.sec[k].len);
         if (!ok) { log_line("MAG-021: %s snapshot faulted - module dropped", m.name); m.ok = false; continue; }
         for (int v = 0; v < m.nvars; v++) *m.vars[v] = (uint32_t)(uintptr_t)g_shadow;
@@ -495,6 +589,7 @@ static void post() {
         }
     }
     if (g_windows == 1 || g_windows % 1800 == 0) {
+        if (g_interp) log_line("MAG-021-INTERP: %ld windows blended, %ld words", g_ip_windows, g_ip_words);
         log_line("MAG-021: %ld windows, %ld DLL updates replayed, %ld fresh-record steps skipped, %ld actors released, copy avg %.0f us",
                  g_windows, g_updates, g_skipped_steps, g_released,
                  g_qpf.QuadPart ? (double)g_ticks_copy * 1e6 / (double)g_qpf.QuadPart / (double)g_windows : 0.0);
@@ -502,6 +597,7 @@ static void post() {
 }
 
 // DIAG-DRAWSTEP: true while [base, base+size) is a module in the current window (replayed on purpose).
+bool mag021_replaying() { return g_phase == 2; }   // inside a replayed DLL update (MAG-016: a real step)
 bool mag021_in_window(const void* base) {
     for (int i = 0; i < MAX_MODS; i++) if (g_mods[i].base == base && g_mods[i].in_window) return true;
     return false;

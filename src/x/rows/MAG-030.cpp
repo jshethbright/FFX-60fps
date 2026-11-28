@@ -131,7 +131,94 @@ static uint8_t* op_buffer(int op, uint8_t* rec, uint32_t* len) {
     return buf;
 }
 
+// MAG-030-INTERP (default 1): render-only calls step a unit from tick k+1 and draw k+2, so the 3 in-between frames
+// all showed one image (U 28/11/2026: summon flames and aeon effects at 30 Hz, MAG-030 op 9 restored on every
+// render-only call). Each logic call keeps the unit's state before its step (two ticks of history); a render-only
+// call first sets every float word that moved steadily to k + f (k+1 - k), f = pass/N, so the step lands between
+// k+1 and k+2. Ints, words that jumped and buffers that changed size keep k+1. The restore puts k+1 back.
+static int  g_interp = 1;
+static uint32_t g_ip_tick = 1;                      // logic invocations (post)
+static LONG g_ip_calls = 0, g_ip_words = 0;
+enum { HIST = 1024 };
+struct Hist { uint8_t* rec; uint8_t op; uint32_t tick; uint32_t len[2], cap[2]; uint8_t r[2][REC]; uint8_t* b[2]; };
+static Hist* g_hist = nullptr;                       // [0] = state at tick g_ip_tick-1 (k), [1] = the tick before
+static Hist* hist_find(uint8_t* rec, int op, bool make) {
+    if (!g_hist) { if (!make) return nullptr; g_hist = (Hist*)calloc(HIST, sizeof(Hist)); if (!g_hist) return nullptr; }
+    uint32_t h = ((uint32_t)(uintptr_t)rec >> 4) % HIST, fr = HIST;
+    for (int n = 0; n < 32; n++, h = (h + 1) % HIST) {
+        Hist& e = g_hist[h];
+        if (e.rec == rec && e.op == op) return &e;
+        if (fr == HIST && (!e.rec || g_ip_tick - e.tick > 4)) fr = h;
+    }
+    if (!make || fr == HIST) return nullptr;
+    Hist& e = g_hist[fr];
+    e.rec = rec; e.op = (uint8_t)op; e.tick = 0; e.len[0] = e.len[1] = 0;
+    return &e;
+}
+static bool hist_keep(Hist& e, int slot, const uint8_t* rec, const uint8_t* buf, uint32_t len) {
+    memcpy(e.r[slot], rec, REC);
+    if (buf && len) {
+        if (e.cap[slot] < len) { free(e.b[slot]); e.b[slot] = (uint8_t*)malloc(len); e.cap[slot] = e.b[slot] ? len : 0; }
+        if (!e.b[slot] || !safe_copy(e.b[slot], buf, len)) { e.len[slot] = 0; return false; }
+    }
+    e.len[slot] = buf ? len : 0;
+    return true;
+}
+static void hist_logic(int op, uint8_t* rec) {          // before the logic step: k-1 -> [1], live (k) -> [0]
+    Hist* e = hist_find(rec, op, true);
+    if (!e) return;
+    uint8_t now[REC];
+    if (!safe_copy(now, rec, REC)) return;
+    uint32_t len = 0;
+    uint8_t* buf = op_buffer(op, rec, &len);
+    bool cont = e->tick + 1 == g_ip_tick;
+    if (cont) {                                          // swap [0] into [1]
+        uint8_t tmp[REC]; memcpy(tmp, e->r[1], REC); memcpy(e->r[1], e->r[0], REC); memcpy(e->r[0], tmp, REC);
+        uint8_t* tb = e->b[1]; e->b[1] = e->b[0]; e->b[0] = tb;
+        uint32_t tc = e->cap[1]; e->cap[1] = e->cap[0]; e->cap[0] = tc;
+        e->len[1] = e->len[0];
+    } else e->len[1] = 0xFFFFFFFF;                       // no k-1 yet
+    hist_keep(*e, 0, now, buf, len);
+    e->tick = g_ip_tick;
+}
+static bool flt(float x) { float a = x < 0 ? -x : x; return x == 0.0f || (a >= 1e-4f && a <= 1e6f); }
+static LONG blend_words(uint32_t* live, const uint32_t* k0, const uint32_t* km1, uint32_t nw, float f) {
+    LONG c = 0;
+    for (uint32_t w = 0; w < nw; w++) {
+        uint32_t bv = live[w], av = k0[w], zv = km1[w];
+        if (bv == av || zv == av) continue;              // still, or stepped once (set, not moving)
+        float b = *(float*)&bv, a = *(float*)&av, z = *(float*)&zv;
+        if (!flt(a) || !flt(b) || !flt(z)) continue;
+        float d0 = a - z, d1 = b - a;
+        float ad0 = d0 < 0 ? -d0 : d0, ad1 = d1 < 0 ? -d1 : d1, ab = b < 0 ? -b : b;
+        if (ad1 > 2.0f * ad0 + 1e-3f * (ab > 1.0f ? ab : 1.0f)) continue;
+        if ((d0 > 0) != (d1 > 0) && ad1 > 0.5f * ad0 + 1e-3f * (ab > 1.0f ? ab : 1.0f)) continue;  // reversal: hold
+        float x = a + f * d1;
+        live[w] = *(uint32_t*)&x;
+        c++;
+    }
+    return c;
+}
+// Live = k+1. Writes the blend into rec/buf (caller restores both after the call).
+static void hist_blend(int op, uint8_t* rec, uint8_t* buf, uint32_t len) {
+    int n = rate_mult();
+    float f = n > 1 ? (float)pacing_pass() / (float)n : 0.0f;
+    if (f <= 0.0f || f >= 1.0f) return;
+    Hist* e = hist_find(rec, op, false);
+    if (!e || e->tick + 1 != g_ip_tick || e->len[1] == 0xFFFFFFFF) return;   // kept at the last logic call (post then counted it)
+    LONG c = blend_words((uint32_t*)rec, (const uint32_t*)e->r[0], (const uint32_t*)e->r[1], REC / 4, f);
+    if (buf && len && e->len[0] == len && e->len[1] == len && e->b[0] && e->b[1]) {
+        uint32_t hdr = op == 9 ? 0x20 : 0x10;            // headers hold counts and pointers
+        c += blend_words((uint32_t*)(buf + hdr), (const uint32_t*)(e->b[0] + hdr), (const uint32_t*)(e->b[1] + hdr), (len - hdr) / 4, f);
+    }
+    if (c) { g_ip_calls++; g_ip_words += c; }
+}
+
 static void call_op(int op, uint8_t* scratch, uint8_t* ctx) {
+    if (g_interp && !g_disabled && row_MAG030.on && pacing_kind() == INV_LOGIC && (g_restore_mask >> op & 1)) {
+        uint8_t* r = nullptr;
+        if (safe_copy(&r, scratch + 0x220, 4) && r) __try { hist_logic(op, r); } __except (EXCEPTION_EXECUTE_HANDLER) { g_interp = 0; }
+    }
     if (g_life_on && !g_disabled && pacing_kind() != INV_BUILD) {
         uint8_t* rec = nullptr;
         uint16_t f0 = 0, f1 = 0;
@@ -154,6 +241,7 @@ static void call_op(int op, uint8_t* scratch, uint8_t* ctx) {
     if (!safe_copy(save_rec, rec, REC)) { g_orig[op](scratch, ctx); return; }
     uint8_t* buf = op_buffer(op, rec, &len);
     if (buf && !safe_copy(save_buf, buf, len)) buf = nullptr;
+    if (g_interp) __try { hist_blend(op, rec, buf, len); } __except (EXCEPTION_EXECUTE_HANDLER) { g_interp = 0; safe_copy(rec, save_rec, REC); if (buf) safe_copy(buf, save_buf, len); }
     g_orig[op](scratch, ctx);
     uint16_t flags = 0;
     uint8_t opb = 0;
@@ -193,6 +281,7 @@ static bool install() {
     if (!g_table) return false;
     char ops[128];
     config_str("rows", "MAG-030-OPS", ops, sizeof(ops), "");
+    g_interp = config_row("MAG-030-INTERP", 1);
     if (ops[0]) g_restore_mask = parse_mask(ops);
     g_life_on = config_row("MAG-030-LIFE", 0);
     if (g_life_on) {
@@ -286,6 +375,7 @@ static void life_post() {
 
 static void post() {
     if (g_life_on && !g_disabled) { walk_post(); life_post(); }
+    if (pacing_kind() == INV_LOGIC) g_ip_tick++;
     static uint32_t tick = 0;
     if (++tick % (300 * (uint32_t)rate_mult()) != 0) return;
     char line[512];
@@ -295,6 +385,7 @@ static void post() {
              e = InterlockedExchange(&g_ended[i], 0);
         if (c) k += _snprintf_s(line + k, sizeof(line) - k, _TRUNCATE, " op%d:%ld/%ld/%ld", i, c, r, e);
     }
+    if (g_interp) log_line("MAG-030-INTERP: %ld render-only unit draws between ticks, %ld words", g_ip_calls, g_ip_words);
     if (k) log_line("MAG-030: render-only OPP calls (op:calls/restored/ended):%s%s", line,
                     g_toolarge ? " (buffers over 64 KB skipped)" : "");
 }

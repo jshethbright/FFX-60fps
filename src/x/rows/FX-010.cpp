@@ -590,7 +590,7 @@ static LONG g_ex_parts = 0, g_ex_words = 0, g_ex_lines = 0;
 // back: the loop restart), so a repeated fade is never moved past the peak it reached last loop.
 struct PSnap { uint8_t* p; uint32_t len; LONG ncur, nprev, nprev2; uint8_t* cur; uint8_t* prev; uint8_t* prev2;
                float* lo; float* hi; float* plo; float* phi; bool plife; };
-enum { PS_N = 4096, EX_MAXW = 1 << 16 };
+enum { PS_N = 16384, EX_MAXW = 1 << 16 };   // PS_N: battle effects run far more particles than the field
 static PSnap* g_psnap = nullptr;
 static uint32_t g_ex_off[EX_MAXW];               // touched words (record pointer + offset) for the restore
 static uint8_t* g_ex_rec[EX_MAXW];
@@ -806,10 +806,10 @@ static LONG g_ip_rej = 0, g_ip_heads = 0, g_ip_packed = 0;
 // back at the next (U 28/11/2026: back-and-forth at 30 Hz, gone with it off).
 static int  g_ip_bigrel = 0; static int g_ip_live = 0;
 
-static void ip_apply(uint8_t* prog, float t) {
+static void ip_apply(uint8_t* prog, float t, bool any_prog = false) {   // any_prog: not a field slot (battle, MAG-006)
     g_ex_nw = 0;
     int pi = prog_index(prog);
-    if (pi < g_ex_lo || pi > g_ex_hi) return;
+    if (!any_prog && (pi < g_ex_lo || pi > g_ex_hi)) return;
     __try {
         for_particles(prog, [&](uint8_t* part, uint32_t len, uint8_t* def) {
             uint32_t hlen = (uint32_t)*(int*)(def + 0x20) & ~3u;
@@ -932,7 +932,8 @@ static void ex_restore() {
     g_ex_nw = 0;
 }
 
-static int __cdecl h_fp_step(void* prog, uint32_t flags) {
+static int g_field_depth = 0;                    // > 0 inside a field step: MAG-006's blending stays out
+static int __cdecl h_fp_step_inner(void* prog, uint32_t flags) {
     if (row_FX010.on && !g_disabled && pacing_kind() == INV_BUILD && prog_selected(prog)) {
         if (*(int32_t*)((uint8_t*)prog + 8) == 0 && *(int32_t*)((uint8_t*)prog + 0xC) == 0) {
             InterlockedIncrement(&g_fresh_calls);
@@ -1008,6 +1009,45 @@ static int __cdecl h_fp_step(void* prog, uint32_t flags) {
         InterlockedIncrement(&g_ip_redraws);
         if (g_diag_submit) diag_step_end(prog, 2);
     }
+    return r;
+}
+
+static int __cdecl h_fp_step(void* prog, uint32_t flags) {
+    ++g_field_depth;
+    int r = h_fp_step_inner(prog, flags);
+    --g_field_depth;
+    return r;
+}
+
+// ---- Battle / DLL particle programs (MAG-006-INTERP): the same blending at Ppp_ProgramStep for the programs MAG-006
+// pauses on render-only invocations (DLL callers, listed EXE callers: orbs, breath, family-X records). Logic: the real
+// step under skip-render, a snapshot, then one paused draw at pass 0's point; render-only: the paused step draws with
+// the blended words, then they go back. Field programs (inside FX-010's step) are left to FX-010.
+static volatile LONG g_bt_logic = 0, g_bt_paused = 0;
+bool fx010_interp_ready() {
+    return g_interp && g_psnap && row_FX010.on && !g_disabled && pacing_active() && g_field_depth == 0;
+}
+int fx010_interp_logic(int (__cdecl* tramp)(void*, uint32_t), void* prog, uint32_t flags) {
+    bool sr = g_skip_render && *g_skip_render == 0;
+    if (sr) *g_skip_render = 1;
+    int r = tramp(prog, flags);
+    if (sr) *g_skip_render = 0;
+    if (r) return r;                                     // ended
+    ex_snapshot((uint8_t*)prog);
+    if (sr) {
+        ip_apply((uint8_t*)prog, pacing_t(), true);
+        ppp_step_paused(tramp, prog, flags);
+        if (g_ex_nw) ex_restore();
+        InterlockedIncrement(&g_bt_logic);
+    }
+    return r;
+}
+int fx010_interp_paused(int (__cdecl* tramp)(void*, uint32_t), void* prog, uint32_t flags) {
+    float t = pacing_t();
+    if (t < 1.0f) ip_apply((uint8_t*)prog, t, true);
+    int r = ppp_step_paused(tramp, prog, flags);
+    if (g_ex_nw) ex_restore();
+    InterlockedIncrement(&g_bt_paused);
     return r;
 }
 
@@ -1716,9 +1756,9 @@ static void live_poll() {
             memset(g_ex_skipw, 0, sizeof(g_ex_skipw));
             for (char* q = line + 5; *q;) {
                 char* e2 = nullptr;
-                unsigned long v = strtoul(q, &e2, 16);
+                unsigned long w = strtoul(q, &e2, 16);
                 if (e2 == q) { q++; continue; }
-                if (v / 4 < 0x800) g_ex_skipw[v / 4] = 1;
+                if (w / 4 < 0x800) g_ex_skipw[w / 4] = 1;
                 q = e2;
             }
         }
@@ -1759,7 +1799,8 @@ static void pre() {
     }
     if (g_interp && g_ip_parts - g_ip_lines >= 20000) {
         g_ip_lines = g_ip_parts;
-        log_line("FX-010-INTERP: %ld particle draws interpolated, %ld words, %ld program redraws, %ld trail heads, %ld packed pairs", g_ip_parts, g_ip_words, g_ip_redraws, g_ip_heads, g_ip_packed);
+        log_line("FX-010-INTERP: %ld particle draws interpolated, %ld words, %ld program redraws, %ld trail heads, %ld packed pairs; battle/DLL steps %ld logic, %ld paused",
+                 g_ip_parts, g_ip_words, g_ip_redraws, g_ip_heads, g_ip_packed, g_bt_logic, g_bt_paused);
     }
     if (g_patched) return;
     g_patched = true;

@@ -12,6 +12,10 @@ bool     ppp_resolve_pause(const char* row, const uint8_t* cmp_at);
 bool     ppp_hook_spawn_call(const char* row, uint8_t* site);
 
 typedef int(__cdecl* ppp_step_t)(void* prog, uint32_t flags);
+bool fx010_interp_ready();
+int  fx010_interp_logic(int (__cdecl* tramp)(void*, uint32_t), void* prog, uint32_t flags);
+int  fx010_interp_paused(int (__cdecl* tramp)(void*, uint32_t), void* prog, uint32_t flags);
+static int g_interp = 1;                         // [rows] MAG-006-INTERP: blend the programs this row pauses (FX-010 code)
 
 static uint8_t*   g_entry = nullptr;
 static ppp_step_t g_tramp = nullptr;
@@ -86,7 +90,15 @@ static int __cdecl h_ppp_step(void* prog, uint32_t flags) {
         InterlockedIncrement(&g_paused_calls);
         if (ret >= base && ret < base + exe_size() && InterlockedIncrement(&g_exe_paused_calls) == 1)
             log_line("MAG-006: first paused step from a listed EXE caller (return gva 0x%08X)", rt_to_gva_exe(ret));
+        if (g_interp && fx010_interp_ready()) return fx010_interp_paused(g_tramp, prog, flags);
         return ppp_step_paused(g_tramp, prog, flags);
+    }
+    // MAG-006-INTERP, logic invocations: the programs paused above step under skip-render and draw blended.
+    if (g_interp && row_MAG006.on && !g_disabled && fx010_interp_ready() &&
+        (*(int32_t*)((uint8_t*)prog + 8) != 0 || *(int32_t*)((uint8_t*)prog + 0xC) != 0)) {
+        uint8_t* ret = (uint8_t*)_ReturnAddress();
+        uint8_t* base = exe_base();
+        if (!(ret >= base && ret < base + exe_size()) || listed(ret)) return fx010_interp_logic(g_tramp, prog, flags);
     }
     return g_tramp(prog, flags);
 }
@@ -99,6 +111,8 @@ static bool install() {
     if (!ppp_resolve_pause("MAG-006", g_entry + 0x3A)) return false;
     g_fresh_on = config_row("MAG-006-FRESH", 1);
     g_unpause = config_row("MAG-006-UNPAUSE", 0);
+    g_interp = config_row("MAG-006-INTERP", 1);
+    log_line("  MAG-006-INTERP: %s (battle/DLL particle programs blended between ticks, needs FX-010-INTERP)", g_interp ? "on" : "off");
     if (g_unpause) log_line("  MAG-006: DIAG UNPAUSE - DLL programs step unpaused on render-only invocations (2x)");
     log_line("  MAG-006: v4 fresh-program exception %s (MAG-006-FRESH)", g_fresh_on ? "ON" : "OFF");
     // Spawn skip is a separate switch: it crashed together with the pause.

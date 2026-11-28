@@ -141,6 +141,9 @@
     <ClCompile Include="src\x\rows\FX-014.cpp" />
     <ClCompile Include="src\x\rows\UI-020.cpp" />
     <ClCompile Include="src\x\rows\DIAG-FRAMETIME.cpp" />
+    <ClCompile Include="src\x\rows\DIAG-LOADHITCH.cpp" />
+    <ClCompile Include="src\x\rows\DIAG-D3DHITCH.cpp" />
+    <ClCompile Include="src\x\rows\FX-PSOWARM.cpp" />
     <ClCompile Include="src\x\rows\UI-001.cpp" />
     <ClCompile Include="src\x\rows\UI-017.cpp" />
     <ClCompile Include="src\x\rows\TEXANIM-001.cpp" />

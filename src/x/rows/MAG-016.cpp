@@ -62,7 +62,12 @@ static PppRecord& R(uint8_t* rec) { return *(PppRecord*)rec; }
 static uint8_t* node_next(uint8_t* node) { return *(uint8_t**)(node + 4); }
 static uint8_t* node_rec(uint8_t* node) { return *(uint8_t**)(node + 8); }
 
-struct Saved { uint8_t* rec; uint32_t cb_age, cb_call, se_timeline; int32_t delay, age; };
+struct Saved { uint8_t* rec; uint32_t cb_age, cb_call, se_timeline; int32_t delay, age, clk, clk_prev; bool moved; };
+// MAG-016-INTERP (default 1): a record's program clock (+0x8, last tick's at +0xC) runs 0x1000 per tick and keys its
+// animation, so held calls drew the same tick N times (U 28/11/2026: summons juddered at 120 fps; D MAG-016-DIAG 16:
+// only +0x8/+0xC/+0x118 change on most ticks). Held calls now run with the clock pass/N of a step ahead; it goes back after.
+static int g_interp = 1;
+static LONG g_ip_calls = 0;
 enum { MAX_RECS = 128 };
 
 static const char* kind_name() {
@@ -126,7 +131,7 @@ static uint32_t mag016_common(void* list, int param, uint32_t slot_idx) {
     g_calls++;
     uint8_t** head = sl.head_abs ? *(uint8_t***)sl.head_abs : (uint8_t**)((uint8_t*)list + 0x30);
     sl.head_last = head;
-    bool held = g_hold && row_MAG016.on && !g_disabled && pacing_kind() == INV_BUILD;
+    bool held = g_hold && row_MAG016.on && !g_disabled && pacing_kind() == INV_BUILD && !mag021_replaying();   // MAG-021 replay: a real step
     if (g_diag & 2) return diag_life_call(sl, head, list, param, held, held ? call_held : call_plain);
     return held ? call_held(sl, head, list, param) : call_plain(sl, head, list, param);
 }
@@ -149,8 +154,31 @@ static uint32_t call_held(Slot& sl, uint8_t** head, void* list, int param) {
         if (mask & 4) R(rec).cb_age = 0;
         if (mask & 2) R(rec).cb_call = 0;
         if (mask & 8) R(rec).se_timeline = 0;
+        s.clk = *(int32_t*)(rec + 8); s.clk_prev = *(int32_t*)(rec + 0xC); s.moved = false;
+        if (g_interp && (mask & 1) && rate_mult() > 1) {
+            int32_t step = s.clk - s.clk_prev;
+            if (step > 0 && step <= 0x10000) {               // a running clock: draw this pass's point of the next step
+                *(int32_t*)(rec + 8) = s.clk + (int32_t)((int64_t)step * pacing_pass() / rate_mult());
+                s.moved = true;
+            }
+        }
     }
+    // Diag 8: which record bytes a held call still changes (beyond the fields put back below), per offset
+    static uint8_t before[MAX_RECS][0x130];
+    if (g_diag & 8) for (int i = 0; i < n; i++) memcpy(before[i], sv[i].rec, 0x130);
     uint32_t r = orig(list, param);
+    if (g_diag & 8) {
+        static LONG lines = 0;
+        for (int i = 0; i < n && lines < 400; i++) {
+            char buf[700]; int k = 0, cnt = 0;
+            for (int o = 0; o < 0x130 && k < 640; o += 4) {
+                if (o == 0x114 || o == 0x118 || o == 0x100 || o == 0x104 || o == 0x110) continue;
+                uint32_t a = *(uint32_t*)(before[i] + o), b = *(uint32_t*)(sv[i].rec + o);
+                if (a != b) { cnt++; k += _snprintf_s(buf + k, sizeof(buf) - k, _TRUNCATE, " +%X:%08X>%08X", o, a, b); }
+            }
+            if (cnt) { lines++; log_line("MAG-016 held-call changes: %s rec=+0x%X n=%d%s", sl.name, mod_off(sl, (uint32_t)(uintptr_t)sv[i].rec), cnt, buf); }
+        }
+    }
     for (int i = 0; i < n; i++) {
         uint8_t* rec = sv[i].rec;
         if (!(R(rec).flags & 0x8000)) continue;    // killed in this call: leave it
@@ -161,6 +189,7 @@ static uint32_t call_held(Slot& sl, uint8_t** head, void* list, int param) {
             R(rec).delay = sv[i].delay;
             R(rec).age = sv[i].age;
         }
+        if (sv[i].moved) { *(int32_t*)(rec + 8) = sv[i].clk; *(int32_t*)(rec + 0xC) = sv[i].clk_prev; g_ip_calls++; }
     }
     g_held_calls++;
     g_held_recs += n;
@@ -259,6 +288,8 @@ static void on_unload(uint8_t* mod) {
 static bool install() {
     g_hold = config_row("MAG-016-HOLD", 1) ? 1 : 0;
     g_diag = config_row("MAG-016-DIAG", 0);
+    g_interp = config_row("MAG-016-INTERP", 1);
+    log_line("  MAG-016-INTERP: %s (held calls draw records at the pass's point of their program clock)", g_interp ? "on" : "off");
     if (!magic_mods_subscribe("MAG-016", on_load, on_unload)) return false;
     log_line("  MAG-016: overlay load hook registered (sig %s), hold=%ld (F10 toggles), diag=%d", SIG, g_hold, g_diag);
     return true;
@@ -295,6 +326,8 @@ static void pre() {
     }
     f11_prev = f11;
     if (pacing_kind() != INV_BUILD) g_logic_tick++;
+    static LONG ip_logged = 0;
+    if (g_ip_calls - ip_logged >= 2000) { ip_logged = g_ip_calls; log_line("MAG-016-INTERP: %ld record draws at a fractional clock so far", g_ip_calls); }
     g_calls = g_held_calls = g_held_recs = 0;
 }
 
@@ -321,7 +354,29 @@ static void dump_records() {
     }
 }
 
+// Diag 16: every record's full 0x130 bytes once per logic tick (which words animate, and how)
+static void dump_full() {
+    static LONG lines = 0;
+    for (int i = 0; i < MAX_SLOTS; i++) {
+        Slot& sl = g_slots[i];
+        if (!sl.mod || !sl.head_last) continue;
+        int n = 0;
+        for (uint8_t* node = *sl.head_last; node && n < 6 && lines < 3000; node = node_next(node), n++) {
+            uint8_t* r = node_rec(node);
+            if (!r) continue;
+            char buf[1300]; int k = 0;
+            for (int o = 0; o < 0x130; o += 4) k += _snprintf_s(buf + k, sizeof(buf) - k, _TRUNCATE, "%08X ", *(uint32_t*)(r + o));
+            lines++;
+            log_line("MAG-016 rec: %s t=%u #%d +0x%X %s", sl.name, g_logic_tick, n, mod_off(sl, (uint32_t)(uintptr_t)r), buf);
+        }
+    }
+}
+
 static void post() {
+    if ((g_diag & 16) && pacing_kind() != INV_BUILD) {
+        __try { dump_full(); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { g_diag &= ~16; log_line("MAG-016 diag 16: read fault - off"); }
+    }
     if ((g_diag & 4) && pacing_kind() != INV_BUILD) {
         __try { dump_records(); }
         __except (EXCEPTION_EXECUTE_HANDLER) { g_diag &= ~4; log_line("MAG-016 diag 4: read fault - state dump off"); }

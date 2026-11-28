@@ -25,6 +25,8 @@ static uint32_t g_pres_n = 0, g_pres_sync1 = 0;
 static UINT     g_last_flags = 0;
 static DWORD    g_pres_tid = 0;
 
+static void (*g_present_cb)(void*) = nullptr;   // FX-PSOWARM: runs on the render thread before each Present
+void vsync_set_present_cb(void (*cb)(void*)) { g_present_cb = cb; }
 static HRESULT STDMETHODCALLTYPE h_present(IDXGISwapChain* sc, UINT sync, UINT flags) {
     UINT use = sync;
     if (row_VSYNC.on && !g_disabled) {
@@ -46,6 +48,7 @@ static HRESULT STDMETHODCALLTYPE h_present(IDXGISwapChain* sc, UINT sync, UINT f
                      sync, flags);
         }
     }
+    if (g_present_cb) g_present_cb(sc);
     LARGE_INTEGER a, b;
     QueryPerformanceCounter(&a);
     HRESULT hr = g_present_orig(sc, use, flags);

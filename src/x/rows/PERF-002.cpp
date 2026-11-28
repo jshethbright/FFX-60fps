@@ -15,6 +15,7 @@
 // (driver low-latency cap, RTSS, monitor): no more retries until the player changes the rate (PERF-002-CAP).
 // Every decision is logged.
 #include "../fps60.h"
+#include <stdlib.h>
 #include <math.h>
 
 enum { HITCH_MS = 50, BASE_S = 20, MAX_S = 640 };
@@ -57,7 +58,19 @@ static void hold(bool on) {
     pacing_hold_stock("PERF-002", on);
 }
 
+// The window's median frame, not the mean (U 28/11/2026: a character swap loads with a run of 15-40 ms frames under
+// the 50 ms hitch line; their mean read 72 fps and 120 stepped to 60 for 20 s, a stutter on every load). A PC that
+// cannot hold the rate is slow on most frames, so its median is over the limit too.
+enum { SAMPLES = 2048 };
+static float g_ms[SAMPLES];
 static void reset_window() { g_n = g_hitch = 0; g_sum = 0; }
+static int cmp_f(const void* a, const void* b) { float x = *(const float*)a, y = *(const float*)b; return x < y ? -1 : x > y; }
+static double window_median() {
+    uint32_t n = g_n < SAMPLES ? g_n : SAMPLES;
+    if (!n) return 0;
+    qsort(g_ms, n, sizeof(float), cmp_f);
+    return n & 1 ? g_ms[n / 2] : 0.5 * (g_ms[n / 2 - 1] + g_ms[n / 2]);
+}
 
 static void arm_retry() {
     LARGE_INTEGER now;
@@ -75,7 +88,7 @@ static void window_done() {
         reset_window();
         return;
     }
-    double mean = g_n ? g_sum / g_n : 0;
+    double mean = window_median();               // named mean in the log lines below: the median
     double lim = limit_ms();
     // A retry must reach the full rate (97%, frame jitter only): with the 55/60 limit, 150 "held" at 142.9 fps
     // under a 141 cap and the game ran ~5% slow (D fps60.log 02:28:33).
@@ -84,7 +97,7 @@ static void window_done() {
     reset_window();
     if (!slow) {
         if (g_retry) {
-            log_line("PERF-002: %d fps retry holds (mean %.2f ms, %.1f fps); back-off reset", rate_mult() * 30,
+            log_line("PERF-002: %d fps retry holds (median %.2f ms, %.1f fps); back-off reset", rate_mult() * 30,
                      mean, 1000.0 / mean);
             g_retry = false;
             g_backoff_s = BASE_S;
@@ -112,11 +125,11 @@ static void window_done() {
     }
     g_fall_fps = fps;
     if (down && rate_step_fps(down)) {
-        log_line("PERF-002: %d fps not held (mean %.2f ms, %.1f fps, limit %.1f fps): %d fps, retry in %u s (fall %u)",
+        log_line("PERF-002: %d fps not held (median %.2f ms, %.1f fps, limit %.1f fps): %d fps, retry in %u s (fall %u)",
                  cur, mean, 1000.0 / mean, 1000.0 / lim, down, g_backoff_s, g_falls);
         return;
     }
-    log_line("PERF-002: %d fps not held (mean %.2f ms, %.1f fps, limit %.1f fps): stock 30 fps, retry in %u s (fall %u)",
+    log_line("PERF-002: %d fps not held (median %.2f ms, %.1f fps, limit %.1f fps): stock 30 fps, retry in %u s (fall %u)",
              cur, mean, 1000.0 / mean, 1000.0 / lim, g_backoff_s, g_falls);
     hold(true);
 }
@@ -152,7 +165,7 @@ static void pre() {
     if (g_prev.QuadPart) {
         double ms = (now.QuadPart - g_prev.QuadPart) * 1000.0 / g_freq.QuadPart;
         if (ms > HITCH_MS) g_hitch++;
-        else { g_sum += ms; g_n++; }
+        else { if (g_n < SAMPLES) g_ms[g_n] = (float)ms; g_sum += ms; g_n++; }
         if (g_n + g_hitch >= g_win) window_done();
     }
     g_prev = now;
@@ -166,6 +179,7 @@ static bool install() {
     g_limit_frac = fps / 60.0;
     g_win = (uint32_t)config_row("PERF-002-WINDOW", 120);
     if (g_win < 30) g_win = 30;
+    if (g_win > SAMPLES) g_win = SAMPLES;
     g_gen = rate_gen();
     g_jump = config_row("PERF-002-JUMP", 1) != 0;
     g_capstop = config_row("PERF-002-CAP", 1) != 0;

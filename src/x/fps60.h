@@ -180,6 +180,9 @@ extern Row row_FX012;                            // rows/FX-012.cpp (PPP pool fu
 bool fx012_failed(void* prog);                   // FX-012: a program whose init failed; MAG-006's step detour returns 1
 extern Row row_FX011;                            // rows/FX-011.cpp (draw packet pools full: drop the sprite, no crash)
 extern Row row_DIAGFRAMETIME;                    // rows/DIAG-FRAMETIME.cpp (frame time histogram, VRR check)
+extern Row row_DIAGLOADHITCH;                    // rows/DIAG-LOADHITCH.cpp (slow frames: game work vs file I/O)
+extern Row row_DIAGD3DHITCH;                     // rows/DIAG-D3DHITCH.cpp (slow frames: D3D11 call times)
+extern Row row_FXPSOWARM;                         // rows/FX-PSOWARM.cpp (shader/state combos warmed at startup)
 extern Row row_RATE001;                          // rows/RATE-001.cpp (host frame limiter retargeted to N * 29.97 Hz)
 void     mag026_draw_record(uint8_t* head, uint8_t* nd, void* cb); // MAG-020 draw-only walk -> MAG-026
 extern Row row_UI001;                            // rows/UI-001.cpp
@@ -187,6 +190,7 @@ bool ui001_frame_capture_pending();              // an ATEL transition will capt
 uint64_t ui001_screen_filter();                  // active immediate color filter, or zero
 extern Row row_UI017;                           // rows/UI-017.cpp (pad latch per logic tick, K4)
 extern Row row_VSYNC;                            // rows/VSYNC.cpp (option: Present with SyncInterval 1)
+void vsync_set_present_cb(void (*cb)(void*));      // rows/VSYNC.cpp: callback before each Present (render thread)
 bool vsync_hook_for_diag();                      // rows/VSYNC.cpp: Present hooked (pass-through while VSYNC is off)
 void vsync_present_stats(double* ms, uint32_t* n, uint32_t* synced, unsigned* flags, unsigned long* tid);  // and reset
 extern Row row_UI013;                            // rows/UI-013.cpp (distortion grid wave step 1/N per invocation)
@@ -238,6 +242,7 @@ void* mag008_dispatch();                         // MAG-008: MsBattleScene_DrawD
 bool  mag025_dll_hold_ready();                   // MAG-025: DLL-called walks are held on render-only invocations
 void  mag025_hold_pass0(bool on);                // MAG-025: also hold DLL pass-0 walks (MAG-032 replay window)
 const char* mag021_state();                     // MAG-021: window state, for the crash line
+bool  mag021_replaying();                      // MAG-021: inside a replayed DLL update
 bool  mag021_in_window(const void* base);        // MAG-021: module replayed in the current window
 int   famE_find_setter(uint8_t* mod, uint32_t size, uint8_t** hit); // MAG-018: family-E exec-pause setter count
 int   qol_ap_rate();                             // QOL-AP: AP percent for members who did not fight

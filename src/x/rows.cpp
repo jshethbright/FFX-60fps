@@ -1,3 +1,4 @@
+#include <stdio.h>
 // SPDX-License-Identifier: Apache-2.0
 // Row registry: one entry per ledger-row mitigation, each toggled by its row ID in [rows] and logging one
 // install line. How to add a row: README.md "Adding a row".
@@ -37,6 +38,9 @@ static Row* g_rows[] = {
     &row_FX013,
     &row_FX014,
     &row_DIAGFRAMETIME,
+    &row_DIAGLOADHITCH,
+    &row_DIAGD3DHITCH,
+    &row_FXPSOWARM,
     &row_UI001,
     &row_UI017,
     &row_UISPH001,
@@ -209,7 +213,34 @@ static void row_call(Row* r, void (*fn)(), const char* what) {
     if (ms > 50.0) log_line("rows: %s %s took %.1f ms", r->id, what, ms);
 }
 
+// fps60_live.txt beside the exe (dev testing, no restart): lines "ROW-ID=0|1" turn rows off/on at runtime through
+// row_set; read when the file changes, checked every 60 invocations. No file = nothing happens.
+static void live_rows() {
+    static uint32_t n = 0; static FILETIME seen = {};
+    if (++n % 60) return;
+    char path[MAX_PATH]; DWORD k = GetModuleFileNameA(nullptr, path, MAX_PATH);
+    while (k && path[k - 1] != 0x5C) k--;
+    if (!k || k + 16 > MAX_PATH) return;
+    strcpy_s(path + k, MAX_PATH - k, "fps60_live.txt");
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fa)) return;
+    if (CompareFileTime(&fa.ftLastWriteTime, &seen) == 0) return;
+    seen = fa.ftLastWriteTime;
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "r") || !f) return;
+    char line[96];
+    while (fgets(line, sizeof(line), f)) {
+        char* eq = strchr(line, '=');
+        if (!eq || line[0] == ';') continue;
+        *eq = 0;
+        bool on = eq[1] == '1';
+        for (Row** p = g_rows; *p; p++) if (strcmp((*p)->id, line) == 0) { row_set(**p, on); break; }
+    }
+    fclose(f);
+}
+
 void rows_pre() {
+    live_rows();
     hotkey_camera_rows();
 #ifdef FPS60_DEV
     hotkey_fx_rows();
