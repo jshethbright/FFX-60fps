@@ -183,6 +183,7 @@ extern Row row_DIAGFRAMETIME;                    // rows/DIAG-FRAMETIME.cpp (fra
 extern Row row_RATE001;                          // rows/RATE-001.cpp (host frame limiter retargeted to N * 29.97 Hz)
 void     mag026_draw_record(uint8_t* head, uint8_t* nd, void* cb); // MAG-020 draw-only walk -> MAG-026
 extern Row row_UI001;                            // rows/UI-001.cpp
+bool ui001_frame_capture_pending();              // an ATEL transition will capture this frame
 extern Row row_UI017;                           // rows/UI-017.cpp (pad latch per logic tick, K4)
 extern Row row_VSYNC;                            // rows/VSYNC.cpp (option: Present with SyncInterval 1)
 bool vsync_hook_for_diag();                      // rows/VSYNC.cpp: Present hooked (pass-through while VSYNC is off)

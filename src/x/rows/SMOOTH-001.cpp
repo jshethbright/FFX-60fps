@@ -161,7 +161,8 @@ static void on_call(int vp) {
         // Still the matrix we wrote for an earlier viewport this pass: writing again would save it as g_orig,
         // and pre()'s restore would hand it back as if the game had built it (same guard as the logic path).
         if (g_written && memcmp(g_view, g_out, 64) == 0) return;
-        g_draw_cut = false;
+        g_draw_cut = ui001_frame_capture_pending();
+        if (g_draw_cut) return;
         if (tag == 1 && vp == 1) return;                      // special commit paths (MsCommitCameraFovAspect)
         g_draw_cut = h.prev_cut || !h.valid || h.tag != tag;
         if (t >= 1.0f) return;                               // the last pass of the period draws tick k
@@ -181,7 +182,10 @@ static void on_call(int vp) {
     float* blk = g_fovblk ? (float*)((uint8_t*)g_fovblk + vp * 0x1C0) : nullptr;
     if (blk) for (int i = 0; i < 3; i++) h.pendfov[i] = *(float*)((uint8_t*)blk + k_fovoff[i]);
     if (!smooth_live(1) || ours) return;
-    g_draw_cut = false;
+    // The transition stores this frame for later crossfade draws. Capture the current
+    // game state, rather than the first fractional frame between the last two ticks.
+    g_draw_cut = ui001_frame_capture_pending();
+    if (g_draw_cut) { h.pend_cut = true; return; }
     g_logic_calls++;
     if (tag == 1 && vp == 1) return;
     g_draw_cut = h.pend_cut = true;                           // cleared once the frame is interpolated
