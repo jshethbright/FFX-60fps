@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SMOOTH-001: under the mod's pacing the camera is still built once per logic tick, so it moves at 30 Hz.
 // This row draws every pass of a logic period with the view a fraction of the way between the last two ticks:
-// pass j of N draws (j + 1) / N (pacing_t), and the last pass of the period draws tick k untouched. At 60 fps
+// pass j of N draws (j + 1) / N (pacing_t), and the last pass draws the saved view from tick k. At 60 fps
 // (N = 2) that is the old pair - the logic frame at 0.5, the render-only frame at tick k. The logic pass
 // interpolates from the tick before this one (h.prev) to the view the game just built; later passes
 // interpolate the pair the period was entered with (h.last -> h.prev). Needs master SMOOTH=1.
@@ -239,12 +239,13 @@ static bool draw_between(int vp, int tag, const float* a, const float* b, const 
             cur[i] = *(float*)((uint8_t*)blk + k_fovoff[i]);
             float x = fa[i], y = fb[i], m = fabsf(x) > fabsf(y) ? fabsf(x) : fabsf(y);
             if (m > 0 && fabsf(x - y) > 0.25f * m) { InterlockedIncrement(&g_fov_cut); return false; }
-            mid[i] = x + t * (y - x);
-            if (x != y) fov_mid = true;
+            mid[i] = t >= 1.0f ? y : x + t * (y - x);
+            if (mid[i] != cur[i]) fov_mid = true;
         }
     }
     float out[16];
-    if (!smooth_interp_view(a, b, t, SMOOTH_CUT_DIST, out)) { InterlockedIncrement(&g_st.interp_cut); return false; }
+    if (t >= 1.0f) memcpy(out, b, sizeof(out));
+    else if (!smooth_interp_view(a, b, t, SMOOTH_CUT_DIST, out)) { InterlockedIncrement(&g_st.interp_cut); return false; }
     if (fov_mid) {
         for (int i = 0; i < 3; i++) *(float*)((uint8_t*)blk + k_fovoff[i]) = mid[i];
         g_fovcommit(vp);                                      // commits the game view; write_view commits ours after
@@ -275,9 +276,8 @@ static void on_call(int vp) {
         g_draw_cut = ui001_frame_capture_pending() || h.prev_cut || source_changed;
         if (g_draw_cut) return;
         if (tag == 1 && vp == 1) return;                      // special commit paths (MsCommitCameraFovAspect)
-        if (t >= 1.0f) return;                               // the last pass of the period draws tick k
-        // prev_cut: the logic pass found this tick was a cut and left the frame on tick k, so the passes
-        // after it hold tick k as well rather than sweeping across the cut.
+        // Native finalize can build a view ahead of tick k on a render-only pass.
+        // Use the saved pair through t == 1 so the next logic frame cannot move backward.
         if (!h.last_valid) { g_skip_hist++; return; }
         g_draw_cut = !draw_between(vp, tag, h.last, h.prev, h.lastfov, h.prevfov, t);
         return;
